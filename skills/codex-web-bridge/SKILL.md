@@ -14,7 +14,7 @@ This skill does:
 - Build a bounded context packet from the current repo, diff, selected files, logs, and user question.
 - Run a local scrub check before anything is sent to a third-party web model.
 - Optionally create a file-based outbox/inbox handoff under `.codex-web-bridge/` for traceability.
-- Use an approved browser session to send the packet to ChatGPT Pro, Claude, Grok, Gemini, or another selected web model.
+- Use an approved browser surface to send the packet to ChatGPT Pro, Claude, Grok, Gemini, or another selected web model.
 - Wait for completion and capture the full response.
 - Return the response to the user or use it as input for the next Codex step when the user asked Codex to continue.
 
@@ -33,6 +33,7 @@ This skill does not:
    - State the exact question for the target model.
    - State whether Codex should only report the response or continue executing after reading it.
    - State what local context is in scope and out of scope.
+   - If the browser surface is not specified, ask one concise choice before sending: normal Chrome/browser session, Codex app side-panel browser, or manual paste. Tell the user the side-panel browser may require one-time sign-in on first use.
 
 2. Build the context packet.
    - Prefer the bundled script when working in a Git repo:
@@ -68,6 +69,7 @@ python3 /path/to/codex-web-bridge/scripts/bridge_handoff.py create \
   --repo "$PWD" \
   --provider chatgpt \
   --purpose planning \
+  --surface ask \
   --question "What is the safest implementation plan for this change?" \
   --scope "Current implementation diff"
 ```
@@ -78,7 +80,10 @@ python3 /path/to/codex-web-bridge/scripts/bridge_handoff.py create \
 
 5. Submit through the web provider.
    - Read `references/providers.md` before using a provider that is not already familiar in the current browser session.
-   - Prefer the Browser or Chrome skill appropriate to the user's active session and login state.
+   - Use the selected browser surface:
+     - `chrome`: Codex controls the user's normal Chrome/browser session, usually best when the user is already logged in.
+     - `in-app-browser`: Codex uses the app side-panel browser. If this is the first time, ask the user to authenticate there once.
+     - `manual`: do not automate the browser; give the outbox paste prompt to the user and import their response.
    - Reuse an existing relevant thread when it preserves context; start a new thread when the old one is stale, noisy, unrelated, or the user asks for a clean thread.
    - Verify the visible model/provider when possible. If model selection cannot be verified, say so.
    - Paste or type the final packet and submit it only after the scrub result is acceptable.

@@ -9,6 +9,7 @@
 - 从当前 repo、diff、未跟踪文件、指定证据文件和用户问题生成 context packet；
 - 外发前扫描常见 secret、token、private key、内部 URL 等风险；
 - 用 `.codex-web-bridge/outbox` / `.codex-web-bridge/inbox` 保存可追踪的本地交接记录；
+- 让用户选择普通 Chrome/浏览器、Codex 应用侧边栏浏览器或手动粘贴；
 - 通过浏览器把 packet 发给 ChatGPT Pro、Claude、Grok、Gemini 等网页模型；
 - 等待模型生成完成并抓取完整回复；
 - 把回复交回 Codex 或用户。
@@ -64,11 +65,14 @@ Use $codex-web-bridge to send this failing test and implementation context to Cl
 1. 明确要问哪个网页模型，以及要问什么。
 2. 用 `build_context_packet.py` 打包上下文。
 3. 用 `scrub_context.py` 做外发前扫描。
-4. 可选：用 `bridge_handoff.py create` 生成 outbox 目录和可直接粘贴的 prompt。
-5. 通过浏览器打开或复用对应网页模型线程。
-6. 发送 scrub 通过后的 packet。
-7. 等待模型完整回复。
-8. 抓取回复，用 `bridge_handoff.py done` 写回 inbox，或直接交回 Codex / 用户。
+4. 选择浏览器 surface：普通 Chrome/浏览器、Codex 应用侧边栏浏览器，或手动粘贴。
+5. 可选：用 `bridge_handoff.py create` 生成 outbox 目录和可直接粘贴的 prompt。
+6. 通过浏览器打开或复用对应网页模型线程。
+7. 发送 scrub 通过后的 packet。
+8. 等待模型完整回复。
+9. 抓取回复，用 `bridge_handoff.py done` 写回 inbox，或直接交回 Codex / 用户。
+
+如果选择 Codex 应用侧边栏浏览器，第一次访问对应网页模型时可能需要用户在侧边栏里登录认证一次；它和用户日常 Chrome 登录态不一定共享。
 
 ## 脚本
 
@@ -99,6 +103,7 @@ python3 skills/codex-web-bridge/scripts/bridge_handoff.py create \
   --repo . \
   --provider chatgpt \
   --purpose planning \
+  --surface ask \
   --question "What is the safest implementation plan for this change?" \
   --scope "Current implementation diff"
 ```

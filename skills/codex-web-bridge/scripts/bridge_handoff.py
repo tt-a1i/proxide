@@ -18,6 +18,12 @@ from scrub_context import scan as scan_packet
 
 SCHEMA_VERSION = "codex-web-bridge.handoff.v1"
 DEFAULT_BRIDGE_DIR = ".codex-web-bridge"
+BROWSER_SURFACES = {
+    "ask",
+    "chrome",
+    "in-app-browser",
+    "manual",
+}
 
 
 def utc_timestamp() -> str:
@@ -105,11 +111,25 @@ def web_prompt(packet: str) -> str:
     )
 
 
+def surface_note(surface: str) -> str:
+    if surface == "chrome":
+        return "Use the user's normal Chrome/browser session when Codex is allowed to control it."
+    if surface == "in-app-browser":
+        return "Use the Codex app side-panel browser. First use may require the user to sign in there once."
+    if surface == "manual":
+        return "Do not automate a browser. Give the paste prompt to the user and import their copied response."
+    return (
+        "Ask the user which browser surface to use before sending: normal Chrome/browser session, "
+        "or Codex app side-panel browser. Mention that the side-panel browser may require one-time sign-in."
+    )
+
+
 def start_here(
     *,
     handoff_id: str,
     provider: str,
     purpose: str,
+    surface: str,
     question: str,
     outbox_dir: Path,
     inbox_dir: Path,
@@ -128,8 +148,10 @@ def start_here(
             "",
             f"- Provider: `{provider}`",
             f"- Purpose: `{purpose}`",
+            f"- Browser surface: `{surface}`",
             f"- Scrub: `{scrub_status}`",
             f"- Question: {question}",
+            f"- Surface note: {surface_note(surface)}",
             "",
             "## Send",
             "",
@@ -227,6 +249,7 @@ def create_handoff(args: argparse.Namespace) -> int:
         "created_at": created_at,
         "provider": args.provider,
         "purpose": args.purpose,
+        "surface": args.surface,
         "question": args.question,
         "scope": args.scope,
         "out_of_scope": args.out_of_scope,
@@ -259,6 +282,7 @@ def create_handoff(args: argparse.Namespace) -> int:
             handoff_id=handoff_id,
             provider=args.provider,
             purpose=args.purpose,
+            surface=args.surface,
             question=args.question,
             outbox_dir=outbox_dir,
             inbox_dir=inbox_dir,
@@ -272,6 +296,7 @@ def create_handoff(args: argparse.Namespace) -> int:
     print(f"handoff_id: {handoff_id}")
     print(f"outbox: {relative_or_absolute(outbox_dir, repo)}")
     print(f"paste: {relative_or_absolute(outbox_dir / '01_PASTE_TO_WEB_MODEL.md', repo)}")
+    print(f"surface: {args.surface}")
     print(f"scrub: {scrub_status}")
     return 0
 
@@ -337,6 +362,7 @@ def done_handoff(args: argparse.Namespace) -> int:
         "",
         f"- Handoff: `{handoff_id}`",
         f"- Provider: `{outbox.get('provider', args.provider or 'unknown')}`",
+        f"- Browser surface: `{outbox.get('surface', args.surface or 'unknown')}`",
         f"- Model: `{args.model or 'unknown'}`",
         f"- Captured: `{captured_at}`",
     ]
@@ -354,6 +380,7 @@ def done_handoff(args: argparse.Namespace) -> int:
         "status": "response-imported",
         "captured_at": captured_at,
         "provider": outbox.get("provider", args.provider or "unknown"),
+        "surface": outbox.get("surface", args.surface or "unknown"),
         "model": args.model or "unknown",
         "thread_url": args.thread_url,
         "notes": args.notes,
@@ -375,7 +402,7 @@ def list_handoffs(args: argparse.Namespace) -> int:
     outbox_root = bridge_root / "outbox"
     inbox_root = bridge_root / "inbox"
 
-    rows: list[tuple[str, str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str, str]] = []
     seen: set[str] = set()
     outbox_manifests = sorted(outbox_root.glob("*/manifest.json")) if outbox_root.exists() else []
     inbox_manifests = sorted(inbox_root.glob("*/manifest.json")) if inbox_root.exists() else []
@@ -395,6 +422,7 @@ def list_handoffs(args: argparse.Namespace) -> int:
                 status,
                 manifest.get("provider", "unknown"),
                 manifest.get("purpose", "unknown"),
+                manifest.get("surface", "unknown"),
                 question,
             )
         )
@@ -410,6 +438,7 @@ def list_handoffs(args: argparse.Namespace) -> int:
                 manifest.get("status", "response-imported"),
                 manifest.get("provider", "unknown"),
                 manifest.get("purpose", "unknown"),
+                manifest.get("surface", "unknown"),
                 re.sub(r"\s+", " ", manifest.get("notes", "") or "[response-only import]").strip()[:64],
             )
         )
@@ -418,7 +447,7 @@ def list_handoffs(args: argparse.Namespace) -> int:
         print("[no handoffs]")
         return 0
 
-    print("handoff_id\tstatus\tprovider\tpurpose\tquestion")
+    print("handoff_id\tstatus\tprovider\tpurpose\tsurface\tquestion")
     for row in rows:
         print("\t".join(row))
     return 0
@@ -442,6 +471,12 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--handoff-id", default="", help="Stable handoff id. Defaults to timestamp-provider-purpose.")
     create.add_argument("--provider", default="chatgpt", help="Target provider label.")
     create.add_argument("--purpose", choices=sorted(BRIDGE_PURPOSES), default="custom")
+    create.add_argument(
+        "--surface",
+        choices=sorted(BROWSER_SURFACES),
+        default="ask",
+        help="Browser surface to use: ask, chrome, in-app-browser, or manual.",
+    )
     create.add_argument("--question", required=True, help="Exact question for the web model.")
     create.add_argument("--base", default="", help="Base branch/ref. Auto-detected when omitted.")
     create.add_argument("--scope", default="", help="In-scope context for this bridge request.")
@@ -466,6 +501,12 @@ def build_parser() -> argparse.ArgumentParser:
     done.add_argument("--response-text", default="", help="Response text to import.")
     done.add_argument("--from-clipboard", action="store_true", help="Read response from macOS clipboard via pbpaste.")
     done.add_argument("--provider", default="", help="Provider label when no outbox manifest exists.")
+    done.add_argument(
+        "--surface",
+        choices=sorted(BROWSER_SURFACES),
+        default="",
+        help="Browser surface used when no outbox manifest exists.",
+    )
     done.add_argument("--model", default="", help="Visible model name, if known.")
     done.add_argument("--thread-url", default="", help="Provider thread URL, if available.")
     done.add_argument("--notes", default="", help="Capture notes or caveats.")

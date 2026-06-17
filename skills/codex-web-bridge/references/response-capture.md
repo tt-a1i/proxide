@@ -28,6 +28,7 @@ Use fixed waits only as a fallback, and follow them with a concrete state check.
 Report:
 
 - Provider and model if visible.
+- Browser surface: normal Chrome/browser session, Codex app side-panel browser, or manual paste.
 - Thread URL or enough context to identify the conversation.
 - Packet scope and scrub result.
 - Outbox/inbox handoff id when `bridge_handoff.py` was used.

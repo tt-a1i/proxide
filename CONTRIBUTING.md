@@ -29,6 +29,7 @@ python3 skills/codex-web-bridge/scripts/bridge_handoff.py create \
   --bridge-dir /tmp/codex-web-bridge-handoff \
   --provider chatgpt \
   --purpose planning \
+  --surface in-app-browser \
   --question "Verify file handoff protocol" \
   --scope "Current repository state"
 python3 skills/codex-web-bridge/scripts/bridge_handoff.py done \
