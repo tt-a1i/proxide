@@ -16,6 +16,7 @@
 - 新增响应抓取指南，明确等待、完整性和 traceability 规则。
 - 新增 `bridge_handoff.py`，支持用 `.codex-web-bridge/outbox/<id>` 生成网页模型粘贴内容，并用 `.codex-web-bridge/inbox/<id>` 保存回复。
 - 新增浏览器 surface 选择说明，支持普通 Chrome/浏览器、Codex 应用侧边栏浏览器和手动粘贴，并提示侧边栏首次使用可能需要登录认证。
+- 新增 MCP Connector Mode 设计参考，用于 DevSpace-like 工作流，让 ChatGPT Pro 或其他 MCP host 在用户授权后连接本地 workspace，服务不支持浏览器操作的 agent/host 场景。
 
 ### Fixed
 

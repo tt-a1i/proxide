@@ -1,11 +1,13 @@
 ---
 name: codex-web-bridge
-description: Bridge Codex to web-based AI model products by packaging local task context, scrub-checking it, sending it through an approved browser session to ChatGPT Pro, Claude, Grok, Gemini, or another web model, waiting for the answer, and returning the model response to the user or Codex. Use when the user asks for GPT Pro, ChatGPT Pro, Claude web, Grok, Gemini web, web model bridge, external model consult, ask another model, second opinion, use a web AI model, or send local repo context to a browser-based model for planning, review, debugging, architecture discussion, or implementation guidance.
+description: Bridge Codex to web-based AI model products by packaging local task context, scrub-checking it, sending it through an approved browser surface to ChatGPT Pro, Claude, Grok, Gemini, or another web model, waiting for the answer, and returning the model response to the user or Codex. Also guide DevSpace-like MCP Connector Mode when the user wants ChatGPT Pro or another MCP-capable web host to access approved local workspaces without relying on Codex browser automation. Use when the user asks for GPT Pro, ChatGPT Pro, Claude web, Grok, Gemini web, web model bridge, external model consult, ask another model, second opinion, use a web AI model, browserless agent access to GPT Pro, MCP connector, DevSpace-like workflow, or send local repo context to a browser-based model for planning, review, debugging, architecture discussion, or implementation guidance.
 ---
 
 # Codex Web Bridge
 
 Use this skill as a communication bridge between Codex and web-based AI model products. Codex handles context packaging, basic outbound safety checks, browser submission, waiting, and response capture. The target model and the user handle judgment.
+
+For browserless-agent scenarios, distinguish Bridge Mode from MCP Connector Mode. Connector Mode lets ChatGPT Pro or another MCP host connect to approved local workspaces through a local MCP server; read `references/mcp-connector-mode.md` before advising or designing that path.
 
 ## Boundary
 
@@ -17,16 +19,20 @@ This skill does:
 - Use an approved browser surface to send the packet to ChatGPT Pro, Claude, Grok, Gemini, or another selected web model.
 - Wait for completion and capture the full response.
 - Return the response to the user or use it as input for the next Codex step when the user asked Codex to continue.
+- Explain MCP Connector Mode when browser automation is unavailable or the user wants GPT Pro to work through MCP.
 
 This skill does not:
 
 - Decide whether the target model is correct.
 - Force `FIX` / `DEFER` / `DISMISS` classifications.
 - Let the web model directly edit local files or run local commands.
+- Treat MCP Connector Mode as low trust; it grants a remote MCP host local tool access and must be opt-in.
 - Send context with `BLOCK` scrub findings.
 - Post, publish, or share anything beyond the selected web model unless the user separately authorizes that action.
 
 ## Workflow
+
+If the user asks for a DevSpace-like setup, MCP connector, or using GPT Pro from an agent that cannot operate a browser, read `references/mcp-connector-mode.md` and explain the two-mode choice before proceeding.
 
 1. Define the bridge request.
    - State the destination provider: `chatgpt`, `claude`, `grok`, `gemini`, or `other`.
@@ -125,4 +131,5 @@ Next:
 - `scripts/scrub_context.py`: Scan a packet for obvious secrets and sensitive transmission risks before external submission.
 - `scripts/bridge_handoff.py`: Create `.codex-web-bridge/outbox/<id>` prompts and import `.codex-web-bridge/inbox/<id>` responses.
 - `references/providers.md`: Provider-specific browser guidance for ChatGPT, Claude, Grok, Gemini, and generic web models.
+- `references/mcp-connector-mode.md`: Design guidance for DevSpace-like MCP connector workflows and trust levels.
 - `references/response-capture.md`: Rules for waiting on and extracting model responses.

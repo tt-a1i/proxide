@@ -66,5 +66,6 @@ trufflehog filesystem . --no-update --fail
 - 只有重复、易错、需要确定性的步骤才放进 `scripts/`。
 - 不要在 skill 目录里增加 README、安装指南、发布日志等维护文档。
 - 修改外发逻辑时，优先保证“不发送 BLOCK scrub finding”这个安全边界。
+- MCP Connector Mode 必须和默认 Bridge Mode 分离，默认只读，不要把写入或 shell 权限塞进低信任路径。
 - `.codex-web-bridge/` 是本地运行态，不要提交真实 outbox/inbox 内容。
-- 不要把本项目重新扩大成审查框架或 MCP connector；核心边界是网页模型通信。
+- 不要把本项目重新扩大成审查框架；MCP Connector Mode 是独立高信任模式，不能改变默认网页模型通信桥的低信任边界。

@@ -22,6 +22,11 @@ Choose the browser surface separately from the model provider.
 - `in-app-browser`: Use the Codex app side-panel browser when the user wants the web model inside Codex. This is a cleaner, more contained session, but first use may require the user to sign in to ChatGPT, Claude, Grok, Gemini, or the selected provider inside that side panel.
 - `manual`: Generate the outbox prompt and let the user paste it. Use when browser automation is unavailable, the user wants direct control, or authentication blocks automation.
 
+When the local agent cannot operate any browser and the user wants GPT Pro to
+work with local repo context, switch the conversation to MCP Connector Mode and
+read `mcp-connector-mode.md`. In that mode the web MCP host calls local tools;
+the local agent is not driving a browser.
+
 Default prompt when surface is unclear:
 
 ```text
