@@ -47,7 +47,7 @@ The first public Connector Mode should ship `readonly` before `execute`.
 
 ## Tool Surface
 
-Readonly mode:
+Readonly mode — **implemented** in `connector/` (see repo README):
 
 - `open_workspace`: open a path inside an allowed root and return a workspace id.
 - `read`: read bounded text from a workspace-relative file.
@@ -56,13 +56,14 @@ Readonly mode:
 - `git_status`: return branch, HEAD, and short status.
 - `git_diff`: return bounded diff/stat for the workspace.
 
-Review mode:
+Review mode — **designed, not yet implemented**:
 
 - All readonly tools.
 - `create_note`: save a model review note under bridge runtime state.
 - `show_session`: summarize what was opened/read/searched.
 
-Execute mode:
+Execute mode — **designed, not yet implemented**; must stay behind an explicit,
+separate opt-in with its own trust model and tests before any of these ship:
 
 - All review tools.
 - `edit` / `write`: scoped file mutation under the workspace.

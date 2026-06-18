@@ -13,7 +13,9 @@ git diff --stat
 python3 -m py_compile \
   skills/codex-web-bridge/scripts/bridge_handoff.py \
   skills/codex-web-bridge/scripts/build_context_packet.py \
-  skills/codex-web-bridge/scripts/scrub_context.py
+  skills/codex-web-bridge/scripts/scrub_context.py \
+  connector/*.py connector/tests/*.py
+python3 -m unittest discover -s connector/tests -t .
 ruby -ryaml -e 'front=File.read("skills/codex-web-bridge/SKILL.md").split(/^---\s*$/)[1]; YAML.safe_load(front).fetch("name"); YAML.load_file("skills/codex-web-bridge/agents/openai.yaml").fetch("interface"); puts "yaml OK"'
 python3 skills/codex-web-bridge/scripts/build_context_packet.py \
   --repo . \

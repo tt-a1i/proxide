@@ -42,7 +42,7 @@
 
 参考设计见 [skills/codex-web-bridge/references/mcp-connector-mode.md](skills/codex-web-bridge/references/mcp-connector-mode.md)。
 
-`connector/` 下提供了一个**只读优先**的本地脚手架实现，刻意独立于 Bridge Mode 的 skill 运行态：
+`connector/` 下提供了一个**只读优先**的本地 MCP server 实现，刻意独立于 Bridge Mode 的 skill 运行态。它实现了标准 MCP 生命周期（`initialize` → `notifications/initialized` → `tools/list` / `tools/call`），因此 ChatGPT Pro、Claude 等 MCP host 可以直接连接：
 
 ```bash
 # 1. 复制并编辑配置（allowed_roots 必须指向具体仓库，不能是 ~ 或 /）
@@ -51,16 +51,22 @@ cp connector/connector.example.json connector/connector.local.json
 # 2. 启动本地 connector（默认绑定 127.0.0.1，需要 owner token）
 python3 -m connector.server --config connector/connector.local.json
 
-# 3. 运行安全测试（路径包含 + 权限分级）
-python3 -m unittest connector.tests.test_connector
+# 3. 运行安全测试（路径包含 + 权限分级 + MCP 协议 + HTTP 端到端）
+python3 -m unittest discover -s connector/tests -t .
 ```
 
-约定：
+MCP host 通过 `POST /rpc` 发送 JSON-RPC 2.0 消息，鉴权用 `Authorization: Bearer <owner_token>`。`initialize` 会做协议版本协商（支持 `2025-06-18` / `2025-03-26` / `2024-11-05`）并返回 `serverInfo`、`tools` 能力以及响应头 `Mcp-Session-Id`，host 在后续请求里回带该 session id。`initialize` 之前（除 `ping`）的请求会被拒绝；通知（无 `id`）返回 HTTP 202 空响应。
+
+约定与安全边界：
 
 - `trust_level` 默认 `readonly`；`review` / `execute` 需用户显式升级，且 `execute`（写文件/shell/worktree）尚未实现。
-- 默认绑定 loopback；绑定非 loopback host 必须配置 `owner_token`。
+- 默认绑定 loopback；绑定非 loopback host 必须配置 `owner_token`，owner token 用常量时间比对。
 - 公网隧道由用户自管，隧道 URL 不是 secret，真正的保护是 owner token。
-- 所有 workspace 相对路径都强制包含校验，拒绝绝对路径、`..` 逃逸和 symlink 逃逸。
+- 校验 `Origin` 头防 DNS-rebinding，要求 `Content-Type: application/json` 防浏览器 simple-request 伪造，`GET` / `DELETE` 返回 405。
+- 所有 workspace 相对路径都强制包含校验（realpath + 大小写归一），拒绝绝对路径、`..`、final symlink；`search` 对每个候选重新校验并跳过 symlink，避免树内 symlink 读到 root 外文件。
+- `open_workspace` 不回传本机绝对路径（只回 basename）；git 失败只回通用错误，不转发 git stderr。
+- `search` 有时间、扫描文件数与单文件大小上限；打开的 workspace 数量有上限（LRU 淘汰）。
+- 两类错误分流：未知方法/工具、参数错误走 JSON-RPC error；路径逃逸、信任级别不足、文件缺失等走 `isError: true` 的正常结果。
 
 ## 安装
 
@@ -181,10 +187,15 @@ connector/
 ├── __init__.py
 ├── config.py                # trust 模型 + allowed roots 校验
 ├── workspace.py             # workspace 解析 + 路径包含边界
-├── tools.py                 # 只读工具面 + 权限分级
-├── server.py                # 本地 JSON-RPC 服务（loopback + owner token）
+├── tools.py                 # 只读工具面 + 权限分级 + JSON Schema
+├── protocol.py              # MCP 生命周期 (initialize/initialized/tools)
+├── server.py                # 本地 HTTP 传输（loopback + owner token）
 ├── connector.example.json
-└── tests/test_connector.py  # 路径包含 + 权限分级测试
+└── tests/
+    ├── __init__.py
+    ├── test_connector.py    # 路径包含 + 权限分级测试
+    ├── test_protocol.py     # MCP 握手 + tools/list/call 测试
+    └── test_server.py       # HTTP 传输端到端（auth/origin/session）
 ```
 
 ## 隐私边界

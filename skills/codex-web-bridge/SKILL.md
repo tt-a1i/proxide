@@ -7,7 +7,7 @@ description: Bridge Codex to web-based AI model products by packaging local task
 
 Use this skill as a communication bridge between Codex and web-based AI model products. Codex handles context packaging, basic outbound safety checks, browser submission, waiting, and response capture. The target model and the user handle judgment.
 
-For browserless-agent scenarios, distinguish Bridge Mode from MCP Connector Mode. Connector Mode lets ChatGPT Pro or another MCP host connect to approved local workspaces through a local MCP server; read `references/mcp-connector-mode.md` before advising or designing that path.
+For browserless-agent scenarios, distinguish Bridge Mode from MCP Connector Mode. Connector Mode lets ChatGPT Pro or another MCP host connect to approved local workspaces through a local MCP server; read `references/mcp-connector-mode.md` before advising or designing that path. A readonly Connector Mode server is already implemented in the repo's `connector/` package and runs with `python3 -m connector.server --config <config.json>` (loopback + owner token, readonly tools only); review/execute tools are not implemented yet.
 
 ## Boundary
 
