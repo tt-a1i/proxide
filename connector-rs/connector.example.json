@@ -1,0 +1,10 @@
+{
+  "allowed_roots": ["/Users/you/work/your-repo"],
+  "skill_roots": ["/Users/you/work/codex-pro/skills"],
+  "trust_level": "readonly",
+  "host": "127.0.0.1",
+  "port": 8765,
+  "owner_token": "replace-with-a-strong-random-token",
+  "public_base_url": "https://your-tunnel-host.example.com",
+  "state_dir": "/Users/you/.local/share/codex-web-bridge/connector-rs"
+}

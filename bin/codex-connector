@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+MANIFEST="$REPO_ROOT/connector-rs/Cargo.toml"
+
+if [[ ! -f "$MANIFEST" ]]; then
+  echo "codex-connector: missing Rust connector manifest: $MANIFEST" >&2
+  exit 1
+fi
+
+if [[ -n "${CODEX_CONNECTOR_BIN:-}" ]]; then
+  exec "$CODEX_CONNECTOR_BIN" "$@"
+fi
+
+if [[ ! -x "$(command -v cargo)" ]]; then
+  echo "codex-connector: cargo is required unless CODEX_CONNECTOR_BIN is set" >&2
+  exit 1
+fi
+
+exec cargo run --quiet --manifest-path "$MANIFEST" -- "$@"

@@ -7,7 +7,7 @@ description: Bridge Codex to web-based AI model products by packaging local task
 
 Use this skill as a communication bridge between Codex and web-based AI model products. Codex handles context packaging, basic outbound safety checks, browser submission, waiting, and response capture. The target model and the user handle judgment.
 
-For browserless-agent scenarios, distinguish Bridge Mode from MCP Connector Mode. Connector Mode lets ChatGPT Pro or another MCP host connect to approved local workspaces through a local MCP server; read `references/mcp-connector-mode.md` before advising or designing that path. For first-time ChatGPT Pro setup, also read `references/chatgpt-pro-mcp-setup.md` and separate the agent-side local setup from the human ChatGPT web steps. A readonly Connector Mode server is already implemented in the repo's `connector/` package and runs with `python3 -m connector.server --config <config.json>` (loopback + owner token, readonly tools only); review/execute tools are not implemented yet.
+For browserless-agent scenarios, distinguish Bridge Mode from MCP Connector Mode. Connector Mode lets ChatGPT Pro or another MCP host connect to approved local workspaces through a local MCP server; read `references/mcp-connector-mode.md` before advising or designing that path. For first-time ChatGPT Pro setup, also read `references/chatgpt-pro-mcp-setup.md` and separate the agent-side local setup from the human ChatGPT web steps. The production Connector Mode server is implemented in the repo's root-level `connector-rs/` crate and runs with `./bin/codex-connector serve` after `init` (loopback by default; OAuth owner approval for persistent ChatGPT use; owner token for local/self-managed clients; readonly by default with `preview_patch`, `list_notes`, `list_edit_plans`, `show_review`, and Apps-compatible `render_review` available; review mode adds state-only `create_note`/`create_edit_plan`/`update_edit_plan_status`; `write`/`edit`/`apply_patch`/`move_path`/`shell`/`open_worktree`/`publish_branch`/`create_pull_request`/`refresh_pull_request_status` only with explicit `trust_level=execute`). The Python `connector/` package is retained as a verified reference.
 
 ## Boundary
 
@@ -26,8 +26,8 @@ This skill does not:
 
 - Decide whether the target model is correct.
 - Force `FIX` / `DEFER` / `DISMISS` classifications.
-- Let the web model directly edit local files or run local commands.
-- Treat MCP Connector Mode as low trust; it grants a remote MCP host local tool access and must be opt-in.
+- Let Bridge Mode edit local files or run local commands, or let Connector Mode edit files/run commands without explicit `trust_level=execute`.
+- Bypass Connector Mode opt-in or treat a public tunnel URL as a secret.
 - Send context with `BLOCK` scrub findings.
 - Post, publish, or share anything beyond the selected web model unless the user separately authorizes that action.
 

@@ -38,35 +38,44 @@
 
 这是新增的设计方向：像 DevSpace 那样启动一个本地 MCP connector，让 ChatGPT Pro、Claude 或其他 MCP host 连接到用户允许的本地 workspace。这样即使本地 agent 不支持浏览器操作，也可以让网页端 GPT Pro 使用本地项目上下文。
 
-这个模式和 Bridge Mode 的信任边界完全不同：Connector Mode 是网页模型主动调用本地工具。第一版默认只读，只开放 workspace、read、search、list、git status/diff 等能力；写文件、运行 shell、worktree 执行都必须是显式高信任升级。
+这个模式和 Bridge Mode 的信任边界完全不同：Connector Mode 是网页模型主动调用本地工具。默认只读，只开放 workspace、项目指令发现、skill 发现、read、search、list、git status/diff、patch preview、session 审计、review note / edit plan 恢复、managed worktree 列表等能力；`write` / `edit` / `apply_patch` / `move_path` / `shell` / `open_worktree` / PR 发布与状态刷新只在显式 `trust_level=execute` 时出现。
 
 参考设计见 [skills/codex-web-bridge/references/mcp-connector-mode.md](skills/codex-web-bridge/references/mcp-connector-mode.md)。
 
-`connector/` 下提供了一个**只读优先**的本地 MCP server 实现，刻意独立于 Bridge Mode 的 skill 运行态。它实现了标准 MCP 生命周期（`initialize` → `notifications/initialized` → `tools/list` / `tools/call`），因此 ChatGPT Pro、Claude 等 MCP host 可以直接连接：
+`connector-rs/` 下提供生产方向的 **Rust MCP server**，刻意独立于 Bridge Mode 的 skill 运行态。它实现了标准 MCP 生命周期（`initialize` → 可选 `notifications/initialized` → `tools/list` / `tools/call`）；HTTP 场景里 `initialize` 响应头会返回 `Mcp-Session-Id`，后续请求回带即可调用工具。因此 ChatGPT Pro、Claude 等 MCP host 可以直接连接。`connector/` 下的 Python 实现保留为已验证 reference，新的 MCP 服务能力默认落到 Rust：
 
 ```bash
-# 1. 复制并编辑配置（allowed_roots 必须指向具体仓库，不能是 ~ 或 /）
-cp connector/connector.example.json connector/connector.local.json
+# 1. 初始化配置（allowed_roots 必须指向具体仓库，不能是 ~ 或 /）
+./bin/codex-connector init --root /absolute/path/to/project --skill-root /absolute/path/to/codex-pro/skills
 
-# 2. 启动本地 connector（默认绑定 127.0.0.1，需要 owner token）
-python3 -m connector.server --config connector/connector.local.json
+# 持久 ChatGPT / GPT Pro connector：填 tunnel / public origin，不要带 /mcp
+./bin/codex-connector init --root /absolute/path/to/project --skill-root /absolute/path/to/codex-pro/skills --public-base-url "https://<tunnel-host>" --force
 
-# 3. 运行安全测试（路径包含 + 权限分级 + MCP 协议 + HTTP 端到端）
+# 2. 启动本地 connector（默认绑定 127.0.0.1；是否需要 owner token 取决于配置）
+./bin/codex-connector serve
+
+# 3. 诊断本地 setup
+./bin/codex-connector doctor
+
+# 4. 运行 Rust connector 测试和 Python reference 回归测试
+cargo test --manifest-path connector-rs/Cargo.toml
 python3 -m unittest discover -s connector/tests -t .
 ```
 
-网页端 ChatGPT / GPT Pro 接入时，Connector URL 填公开可达或 Tunnel 暴露的 `/mcp` 地址，例如 `https://<tunnel-host>/mcp`。本地私有仓库优先使用 ChatGPT 支持的 Secure MCP Tunnel；如果改用 ngrok / Cloudflare Tunnel 暴露公网地址，不要在无 OAuth 或等效保护的情况下长期开放本地源码读取能力。当前 `owner_token` 是给本地/自管 MCP client 用的简单 Bearer gate，不是完整的 ChatGPT OAuth 接入方案。
+网页端 ChatGPT / GPT Pro 接入时，Connector URL 填公开可达或 Tunnel 暴露的 `/mcp` 地址，例如 `https://<tunnel-host>/mcp`。持久使用走 Rust connector 的 OAuth owner approval：server 会暴露 protected-resource metadata、authorization-server metadata、authorization code + PKCE、refresh token，并把 owner approval password 与 OAuth token 存在 `state_dir`，不写入仓库配置。`owner_token` 仍保留给本地/自管 MCP client 直接用 `Authorization: Bearer <owner_token>` 调试或自动化。
 
-MCP host 通过 `POST /mcp` 发送 JSON-RPC 2.0 消息，鉴权用 `Authorization: Bearer <owner_token>`。`/rpc` 作为旧本地调试路径继续兼容。`initialize` 会做协议版本协商（支持 `2025-06-18` / `2025-03-26` / `2024-11-05`）并返回 `serverInfo`、`tools` 能力以及响应头 `Mcp-Session-Id`，host 在后续请求里回带该 session id。`initialize` 之前（除 `ping`）的请求会被拒绝；通知（无 `id`）返回 HTTP 202 空响应。
+MCP host 通过 `POST /mcp` 发送 JSON-RPC 2.0 消息。ChatGPT 这类网页端 host 走 OAuth Bearer token；本地自管 client 也可以直接用 owner token。`/rpc` 作为旧本地调试路径继续兼容。`initialize` 会做协议版本协商（支持 `2025-06-18` / `2025-03-26` / `2024-11-05`）并返回 `serverInfo`、`tools` 能力以及响应头 `Mcp-Session-Id`，host 在后续请求里回带该 session id；`notifications/initialized` 会被接受，但 HTTP connector 不依赖它来解锁后续工具调用。`initialize` 之前（除 `ping`）的请求会被拒绝；通知（无 `id`）返回 HTTP 202 空响应。
 
 约定与安全边界：
 
-- `trust_level` 默认 `readonly`；`review` / `execute` 需用户显式升级，且 `execute`（写文件/shell/worktree）尚未实现。
-- 默认绑定 loopback；绑定非 loopback host 必须配置 `owner_token`，owner token 用常量时间比对。
-- 公网隧道由用户自管，隧道 URL 不是 secret，真正的保护是 owner token。
+- `trust_level` 默认 `readonly`；readonly 已包含 `preview_patch`、`list_notes`、`list_edit_plans`、`show_changes`、`show_review`、`show_pull_requests`、`show_edit_plans` 和 Apps-compatible `render_changes` / `render_review` / `render_pull_requests` / `render_edit_plans` 卡片；`review` 增加 `create_note`、`create_edit_plan` 和 `update_edit_plan_status`，只写 connector 状态，不改 workspace；`execute` 需用户显式升级，开放 scoped `write` / `edit` / `apply_patch` / `move_path`、bounded non-interactive `shell`、managed Git worktrees、`publish_branch`、`create_pull_request` 和 `refresh_pull_request_status`。
+- `state_dir` 下会保存 `workspace_state.json`、`audit.jsonl`、review notes 和 PR body handoff 文件。前者给 `show_session` / `sessions list/show` / `list_pull_requests` / `list_edit_plans` 用，记录 session、workspace id、edit plan intent 和路径摘要、PR handoff 摘要、工具名、workspace-relative path、move from/to、query、cwd、结果状态和 bounded error；不会保存文件正文、PR body、shell 命令正文、patch 正文或 shell 输出。Review note 正文只写入 `review-notes.jsonl`，可通过 authenticated readonly `list_notes` 按 `workspace_id` 恢复；`show_review` / `render_review`、`list_edit_plans` / `show_edit_plans` / `render_edit_plans`、PR handoff 读取工具都需要 OAuth `workspace:read` 或 owner token。no-auth smoke connector 不能读取 note body、edit plan intent 或 PR handoff records。PR body 只写入 `pr-bodies/`，audit/state 不保存 patch diff 正文。Edit plan intent 是本地 state 的可恢复 handoff 内容，但不会进入 audit 或 Apps `_meta` 摘要。
+- 默认绑定 loopback；绑定非 loopback host 必须配置 `owner_token`，owner token 和 OAuth token 都用常量时间比对。
+- `public_base_url` 会派生 Host allowlist；公网隧道 URL 不是 secret，真正的保护是 OAuth owner approval 或 owner token。
 - 校验 `Origin` 头防 DNS-rebinding，要求 `Content-Type: application/json` 防浏览器 simple-request 伪造，`GET` / `DELETE` 返回 405。
-- 所有 workspace 相对路径都强制包含校验（realpath + 大小写归一），拒绝绝对路径、`..`、final symlink；`search` 对每个候选重新校验并跳过 symlink，避免树内 symlink 读到 root 外文件。
+- 所有 workspace 相对路径都强制包含校验（canonical path containment），拒绝绝对路径、`..`、final symlink；`search` 对每个候选重新校验并跳过 symlink，避免树内 symlink 读到 root 外文件。
 - `open_workspace` 不回传本机绝对路径（只回 basename）；git 失败只回通用错误，不转发 git stderr。
+- MCP tool result 同时返回 `content`、`structuredContent` 和 Apps-compatible `_meta` 摘要；`_meta` 只放路径、计数、状态、字符数等 compact metadata，不重复文件正文、diff 或 shell 输出。
 - `search` 有时间、扫描文件数与单文件大小上限；打开的 workspace 数量有上限（LRU 淘汰）。
 - 两类错误分流：未知方法/工具、参数错误走 JSON-RPC error；路径逃逸、信任级别不足、文件缺失等走 `isError: true` 的正常结果。
 
@@ -74,13 +83,19 @@ MCP host 通过 `POST /mcp` 发送 JSON-RPC 2.0 消息，鉴权用 `Authorizatio
 
 给第一次使用的人，或者给“不会操作浏览器、但能运行本地命令”的 agent，完整 runbook 见 [skills/codex-web-bridge/references/chatgpt-pro-mcp-setup.md](skills/codex-web-bridge/references/chatgpt-pro-mcp-setup.md)。这里是最短分工：
 
-- 本地 agent：确认当前 checkout 包含 `connector/`，运行测试，创建 `connector/connector.local.json`，把 `allowed_roots` 指向具体项目目录，启动 `python3 -m connector.server --config connector/connector.local.json`。
-- 本地 agent：用 Secure MCP Tunnel、ngrok 或 Cloudflare Tunnel 暴露 `http://127.0.0.1:8765`，把 `https://<tunnel-host>/mcp` 交给用户。公网隧道只适合短时测试；长期使用应走有认证的部署或官方安全隧道。
-- 用户：在 ChatGPT web 里打开 Settings -> Apps & Connectors / Apps / Connectors -> Advanced settings，启用 Developer mode；然后在 Connectors / Apps & Connectors 里 Create 一个 connector，填入 `/mcp` endpoint。
+- 本地 agent：确认当前 checkout 或解压包包含 `connector-rs/` 和 `skills/codex-web-bridge/`。运行 `./bin/codex-connector init --root <target-project> --skill-root <connector-package>/skills --public-base-url https://<tunnel-host> --force` 创建 `connector-rs/connector.local.json`。`--root` 是要开放给 ChatGPT 的目标项目，`--skill-root` 是本项目 checkout/解压包里的 skills 目录。命令会在 `state_dir` 生成 owner approval password；第一次 ChatGPT OAuth 授权页需要它。
+- 本地 agent：运行 `./bin/codex-connector doctor` 诊断配置。
+- 本地 agent：用 `./bin/codex-connector serve` 启动本地 MCP server。
+- 本地 agent：用 Secure MCP Tunnel、ngrok 或 Cloudflare Tunnel 暴露 `http://127.0.0.1:8765`，把 `https://<tunnel-host>/mcp` 交给用户。`public_base_url` 必须和 tunnel origin 一致。
+- 用户：在 ChatGPT web 里打开 Settings -> Apps & Connectors / Apps / Connectors -> Advanced settings，启用 Developer mode；然后在 Connectors / Apps & Connectors 里 Create 一个 connector，填入 `/mcp` endpoint。授权页出现时输入本地 agent 给出的 owner approval password。
 - 验证：新开一个 ChatGPT 对话，选择这个 connector，让它先调用 `open_workspace`，再调用 `read README.md`。如果能返回 README 第一行标题和工具名，链路就跑通了。
-- 收尾：测试完成后关闭 tunnel 和本地 connector；不要长期保留 no-auth 公网隧道。
+- 收尾：测试完成后关闭 tunnel 和本地 connector；不要长期保留 no-auth 公网隧道。持久使用应保留 OAuth 配置并定期清理不需要的 connector/token。
 
-注意：只安装 `skills/codex-web-bridge` 这个 Codex Skill，不等于安装了 MCP server。MCP server 在仓库根目录的 `connector/` 包里；其他 agent 如果不识别 Codex Skill，也仍然可以直接启动 `connector/` 作为通用 MCP server。
+注意：只安装 `skills/codex-web-bridge` 这个 Codex Skill，不等于安装了 MCP server。MCP server 生产方向在仓库根目录的 `connector-rs/` crate 里，并通过 `./bin/codex-connector` 暴露稳定入口；其他 agent 如果不识别 Codex Skill，也仍然可以直接启动 Rust connector 作为通用 MCP server。
+
+## DevSpace 追平路线
+
+我们比 [Waishnav/devspace](https://github.com/Waishnav/devspace) 更晚进入这个方向，所以短期目标不是只做一个 readonly connector，而是先补齐 agent 真实编码所需的能力，再保留 Bridge Mode / scrub / handoff 这些差异化优势。当前追平计划见 [docs/devspace-parity-roadmap.md](docs/devspace-parity-roadmap.md)。
 
 ## 安装
 
@@ -91,6 +106,8 @@ Use $skill-installer to install https://github.com/tt-a1i/codex-web-bridge/tree/
 ```
 
 安装后重启 Codex。
+
+如果需要 MCP Connector Mode，不要只安装 skill 子目录；请 clone 或安装包含 `skills/codex-web-bridge/`、`connector-rs/`、`bin/codex-connector` 的完整项目分发。已只安装 skill 的用户需要升级到完整 checkout，否则只能使用 Bridge Mode，不能启动本地 MCP server。
 
 本地开发时，也可以在仓库根目录用相对路径安装：
 
@@ -182,6 +199,58 @@ python3 skills/codex-web-bridge/scripts/bridge_handoff.py done \
 
 `bridge_handoff.py` 默认写入 `.codex-web-bridge/`，该目录是本地运行态，已被 `.gitignore` 忽略。
 
+Rust Connector CLI：
+
+```bash
+# 可选：安装 release 二进制到 ~/.local/bin/codex-connector
+./scripts/install-connector.sh
+
+# 可选：生成包含二进制、skill、Rust connector 源码和文档的发布包
+./scripts/package-connector.sh
+
+# 创建配置，默认写入 connector-rs/connector.local.json 并生成 owner token
+./bin/codex-connector init --root /absolute/path/to/project
+
+# 可选：让 MCP host 发现随 connector 包发布的 Codex skills
+./bin/codex-connector init --root /absolute/path/to/project --skill-root /absolute/path/to/codex-pro/skills --force
+
+# 显式开启文件写入/编辑/shell 工具；不要用于 no-auth 公网隧道
+./bin/codex-connector init --root /absolute/path/to/project --trust-level execute --force
+
+# ChatGPT / GPT Pro 持久 connector：public_base_url 是 tunnel origin，不带 /mcp
+./bin/codex-connector init --root /absolute/path/to/project --public-base-url https://<tunnel-host> --force
+
+# 临时 no-auth smoke test（只用于短时 readonly tunnel，不能配 execute）
+./bin/codex-connector init --root /absolute/path/to/project --no-owner-token --force
+
+# 如果已经安装，也可以直接用 codex-connector 代替 ./bin/codex-connector。
+
+# 启动 MCP server
+./bin/codex-connector serve
+
+# 检查配置、endpoint 文案、认证状态、Git 是否可用和工具面
+./bin/codex-connector doctor
+
+# 查看最近工具调用审计记录
+./bin/codex-connector audit
+
+# 查看 MCP session 摘要和详情
+./bin/codex-connector sessions list
+./bin/codex-connector sessions show <session-id>
+
+# 查看和清理 connector state 下的 managed Git worktrees
+./bin/codex-connector worktrees list
+./bin/codex-connector worktrees cleanup
+```
+
+发布前验证：
+
+```bash
+./scripts/verify-release.sh
+```
+
+这个脚本会运行 Rust fmt/clippy/test/build、Python reference tests、`git diff --check`、wrapper smoke、installer smoke、release package smoke、本地 `/mcp` HTTP smoke，并打印手动 ChatGPT connector smoke prompt。
+
 ## 目录
 
 ```text
@@ -211,6 +280,13 @@ connector/
     ├── test_connector.py    # 路径包含 + 权限分级测试
     ├── test_protocol.py     # MCP 握手 + tools/list/call 测试
     └── test_server.py       # HTTP 传输端到端（auth/origin/session）
+
+connector-rs/
+├── Cargo.lock
+├── Cargo.toml
+├── connector.example.json
+├── README.md
+└── src/main.rs              # Rust production MCP connector
 ```
 
 ## 隐私边界

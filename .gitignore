@@ -17,6 +17,7 @@ credentials.*
 node_modules/
 dist/
 build/
+target/
 coverage/
 
 # Python bytecode
@@ -40,3 +41,5 @@ temp/
 # Local connector config (may contain owner token and absolute roots).
 connector/connector.local.json
 connector/*.local.json
+connector-rs/connector.local.json
+connector-rs/*.local.json
