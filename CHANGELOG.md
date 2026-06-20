@@ -19,6 +19,7 @@
 - 新增 MCP Connector Mode 设计参考，用于 DevSpace-like 工作流，让 ChatGPT Pro 或其他 MCP host 在用户授权后连接本地 workspace，服务不支持浏览器操作的 agent/host 场景。
 - Rust connector 的 `init` 新增首次交互式 setup：在 TTY 中未传 `--root` 时，会提示填写 allowed roots、端口、public URL 和 skill roots；TTY-attached 脚本可用 `--no-interactive` 保留当前目录默认行为，自动化/agent 仍可继续使用显式 flags；非 loopback public URL 现在必须使用 HTTPS。
 - Rust connector 新增 execute-mode `refresh_pull_requests` 工具，可为已打开 workspace 小批量刷新 persisted PR handoff 记录；它优先使用记录中的 PR URL，缺失时回退到 branch，单次最多刷新 5 条，只更新 connector state，不改 workspace 文件。
+- Rust connector 新增默认开启的 workspace-local automatic skill root discovery：`open_workspace` 会发现 opened workspace 内真实 `.pi/skills` 和 `skills` 目录；workspace 外 skill 目录仍需显式 `--skill-root` 授权，需要收紧时可用 `--no-auto-skill-roots` 或 config `auto_skill_roots: false` 关闭。
 - 新增 `connector/` 只读优先脚手架：包含 trust 模型与 allowed roots 校验（`config.py`）、路径包含边界（`workspace.py`）、只读工具面与权限分级（`tools.py`）、本地 JSON-RPC 服务（`server.py`，默认 loopback + owner token），以及路径包含与权限分级测试（`tests/test_connector.py`）。写文件/shell/worktree 等 execute 工具尚未实现，须在独立信任模型和测试就绪后再加入。
 - connector 实现标准 MCP 协议层（`protocol.py`）：`initialize` 协议版本协商（`2025-06-18` / `2025-03-26` / `2024-11-05`）+ `serverInfo` + `tools` 能力、`notifications/initialized`、`ping`，以及符合规范的 `tools/list`（含 JSON Schema `inputSchema`）和 `tools/call`（`content` 文本块 + `structuredContent` + `isError`）。`server.py` 改为纯 HTTP 传输，通知返回 HTTP 202 空响应。新增 `tests/test_protocol.py` 覆盖握手、版本协商、工具 schema、工具执行错误分流。这样 ChatGPT Pro、Claude 等 MCP host 可以直接连接本地 connector。
 

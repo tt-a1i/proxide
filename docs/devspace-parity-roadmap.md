@@ -41,9 +41,12 @@ Implemented here:
   handoff surface.
 - Instruction and skill discovery foundation: `open_workspace` returns bounded
   root `AGENTS.md` / `CLAUDE.md` / `CONTEXT.md` content, nested instruction
-  file paths, and configured `skill://.../SKILL.md` entrypoints. `read`
-  enforces that a skill's `SKILL.md` entrypoint is read before other files in
-  that skill directory can be read.
+  file paths, and configured or auto-discovered `skill://.../SKILL.md`
+  entrypoints. Automatic skill discovery includes only workspace-local
+  `.pi/skills` and `skills` directories that remain inside the opened
+  workspace after canonicalization; other local skill directories require
+  explicit `skill_roots`. `read` enforces that a skill's `SKILL.md` entrypoint
+  is read before other files in that skill directory can be read.
 - Execute edit/write foundation: explicit `trust_level=execute` exposes scoped
   `write`, exact-match `edit`, bounded unified-diff `apply_patch`, and
   `move_path` tools with containment checks and bounded outputs.
@@ -248,9 +251,11 @@ Deliverables:
 - `open_workspace` returns relevant `AGENTS.md`, `CLAUDE.md`, and `CONTEXT.md`
   instructions when present. Status: implemented for root-level files and
   nested instruction path discovery.
-- Skill discovery from configured skill directories. Status: partial,
-  explicitly configured `skill_roots` are supported and surfaced from
-  `open_workspace` and `list_skills`.
+- Skill discovery from configured and project-local directories. Status:
+  implemented; configured `skill_roots`, workspace `.pi/skills`, and workspace
+  `skills` are surfaced from `open_workspace` when present, with workspace
+  auto-discovery disabled by `auto_skill_roots: false` or
+  `--no-auto-skill-roots`.
 - A tool or structured field that lists available skills and their `SKILL.md`
   entrypoints. Status: implemented as `open_workspace` skill summaries and
   `list_skills`.

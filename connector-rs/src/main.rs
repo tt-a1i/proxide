@@ -129,12 +129,15 @@ struct RawConfig {
     public_base_url: Option<String>,
     #[serde(default)]
     state_dir: Option<PathBuf>,
+    #[serde(default = "default_auto_skill_roots")]
+    auto_skill_roots: bool,
 }
 
 #[derive(Debug, Clone)]
 struct Config {
     allowed_roots: Vec<PathBuf>,
     skill_roots: Vec<PathBuf>,
+    auto_skill_roots: bool,
     trust_level: TrustLevel,
     host: String,
     port: u16,
@@ -174,6 +177,8 @@ enum CommandKind {
         state_dir: Option<PathBuf>,
         #[arg(long = "skill-root")]
         skill_roots: Vec<PathBuf>,
+        #[arg(long)]
+        no_auto_skill_roots: bool,
         #[arg(long)]
         no_interactive: bool,
         #[arg(long)]
@@ -559,6 +564,7 @@ async fn main() -> Result<()> {
             public_base_url,
             state_dir,
             skill_roots,
+            no_auto_skill_roots,
             no_interactive,
             force,
         } => cmd_init(InitOptions {
@@ -572,6 +578,7 @@ async fn main() -> Result<()> {
             public_base_url,
             state_dir,
             skill_roots,
+            auto_skill_roots: !no_auto_skill_roots,
             no_interactive,
             force,
         }),
@@ -597,6 +604,10 @@ fn default_trust() -> TrustLevel {
     TrustLevel::Readonly
 }
 
+fn default_auto_skill_roots() -> bool {
+    true
+}
+
 fn default_host() -> String {
     "127.0.0.1".to_string()
 }
@@ -616,6 +627,7 @@ struct InitOptions {
     public_base_url: Option<String>,
     state_dir: Option<PathBuf>,
     skill_roots: Vec<PathBuf>,
+    auto_skill_roots: bool,
     no_interactive: bool,
     force: bool,
 }
@@ -684,9 +696,12 @@ fn prompt_init_options(
         let skill_answer = prompt_line(
             input,
             output,
-            "Connector skill roots, comma-separated (optional; type none to skip)",
+            "Connector package skill roots, comma-separated (optional; type none to skip all skill discovery)",
             (!default_skill_prompt.is_empty()).then_some(default_skill_prompt.as_str()),
         )?;
+        if skill_answer.trim().eq_ignore_ascii_case("none") {
+            options.auto_skill_roots = false;
+        }
         options.skill_roots =
             parse_optional_path_list_with_default(&skill_answer, &default_skill_roots)?;
     }
@@ -803,6 +818,7 @@ fn write_init_config(options: InitOptions) -> Result<()> {
         public_base_url,
         state_dir,
         skill_roots,
+        auto_skill_roots,
         no_interactive: _,
         force,
     } = options;
@@ -839,11 +855,13 @@ fn write_init_config(options: InitOptions) -> Result<()> {
         owner_token,
         public_base_url: public_base_url.map(|url| url.trim_end_matches('/').to_string()),
         state_dir: state_dir.or_else(default_state_dir),
+        auto_skill_roots,
     };
     let config = validate_raw(raw)?;
     let raw = RawConfig {
         allowed_roots: config.allowed_roots.clone(),
         skill_roots: config.skill_roots.clone(),
+        auto_skill_roots: config.auto_skill_roots,
         trust_level: config.trust_level,
         host: config.host.clone(),
         port: config.port,
@@ -956,6 +974,14 @@ fn cmd_doctor(config_path: PathBuf) -> Result<()> {
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
+        }
+    );
+    println!(
+        "auto_skill_roots: {}",
+        if config.auto_skill_roots {
+            "enabled"
+        } else {
+            "disabled"
         }
     );
     println!("tools: {}", tool_names(config.trust_level).join(", "));
@@ -1159,6 +1185,7 @@ fn validate_raw(raw: RawConfig) -> Result<Config> {
     Ok(Config {
         allowed_roots: roots,
         skill_roots,
+        auto_skill_roots: raw.auto_skill_roots,
         trust_level: raw.trust_level,
         host: raw.host,
         port: raw.port,
@@ -3701,7 +3728,7 @@ fn open_workspace(state: &AppState, path: &str) -> Result<Value> {
     }
     let (id, name, workspace) = register_workspace_root(state, resolved);
     let instructions = workspace_instructions(&workspace.root)?;
-    let (skills, skills_truncated) = skill_summaries(&state.config)?;
+    let (skills, skills_truncated) = skill_summaries(&state.config, Some(&workspace.root))?;
     Ok(json!({
         "workspace_id": id,
         "name": name,
@@ -5421,12 +5448,12 @@ fn workspace_instructions(root: &Path) -> Result<InstructionScan> {
 }
 
 fn list_skills_tool(state: &AppState) -> Result<Value> {
-    let (skills, truncated) = skill_summaries(&state.config)?;
+    let (skills, truncated) = skill_summaries(&state.config, None)?;
     Ok(json!({"skills": skills, "truncated": truncated}))
 }
 
-fn skill_summaries(config: &Config) -> Result<(Vec<Value>, bool)> {
-    let (skills, truncated) = discover_skills(config)?;
+fn skill_summaries(config: &Config, workspace_root: Option<&Path>) -> Result<(Vec<Value>, bool)> {
+    let (skills, truncated) = discover_skills(config, workspace_root)?;
     Ok((
         skills
             .into_iter()
@@ -5444,9 +5471,13 @@ fn skill_summaries(config: &Config) -> Result<(Vec<Value>, bool)> {
     ))
 }
 
-fn discover_skills(config: &Config) -> Result<(Vec<SkillEntry>, bool)> {
+fn discover_skills(
+    config: &Config,
+    workspace_root: Option<&Path>,
+) -> Result<(Vec<SkillEntry>, bool)> {
     let mut skills = Vec::new();
-    for root in &config.skill_roots {
+    let roots = effective_skill_roots(config, workspace_root);
+    for root in &roots {
         collect_skill_entries(root, &mut skills)?;
         if skills.len() > MAX_SKILLS {
             break;
@@ -5460,6 +5491,52 @@ fn discover_skills(config: &Config) -> Result<(Vec<SkillEntry>, bool)> {
     let truncated = skills.len() > MAX_SKILLS;
     skills.truncate(MAX_SKILLS);
     Ok((skills, truncated))
+}
+
+fn effective_skill_roots(config: &Config, workspace_root: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for root in &config.skill_roots {
+        push_canonical_skill_root(&mut roots, root);
+    }
+    if !config.auto_skill_roots {
+        return roots;
+    }
+    if let Some(workspace_root) = workspace_root {
+        push_workspace_skill_root(
+            &mut roots,
+            workspace_root,
+            &workspace_root.join(".pi/skills"),
+        );
+        push_workspace_skill_root(&mut roots, workspace_root, &workspace_root.join("skills"));
+    }
+    roots
+}
+
+fn push_canonical_skill_root(roots: &mut Vec<PathBuf>, candidate: &Path) {
+    let Ok(canonical) = candidate.canonicalize() else {
+        return;
+    };
+    if !canonical.is_dir() || is_broad_root(&canonical) {
+        return;
+    }
+    if roots.iter().any(|root| root == &canonical) {
+        return;
+    }
+    roots.push(canonical);
+}
+
+fn push_workspace_skill_root(roots: &mut Vec<PathBuf>, workspace_root: &Path, candidate: &Path) {
+    let Ok(canonical) = candidate.canonicalize() else {
+        return;
+    };
+    if !canonical.is_dir() || is_broad_root(&canonical) || !is_contained(workspace_root, &canonical)
+    {
+        return;
+    }
+    if roots.iter().any(|root| root == &canonical) {
+        return;
+    }
+    roots.push(canonical);
 }
 
 fn collect_skill_entries(root: &Path, skills: &mut Vec<SkillEntry>) -> Result<()> {
@@ -5561,7 +5638,7 @@ fn resolve_read_target(state: &AppState, ws: &Workspace, rel: &str) -> Result<Re
 
 fn resolve_skill_read_target(state: &AppState, ws: &Workspace, uri: &str) -> Result<ReadTarget> {
     let (skill_id, rel_path) = parse_skill_uri(uri)?;
-    let (skills, _) = discover_skills(&state.config)?;
+    let (skills, _) = discover_skills(&state.config, Some(&ws.root))?;
     let Some(skill) = skills.into_iter().find(|skill| skill.id == skill_id) else {
         bail!("unknown skill id: {skill_id}");
     };
@@ -5605,10 +5682,7 @@ fn skill_read_target_for_file(
     rel: &str,
     absolute_path: &Path,
 ) -> Result<Option<ReadTarget>> {
-    if state.config.skill_roots.is_empty() {
-        return Ok(None);
-    }
-    let (skills, _) = discover_skills(&state.config)?;
+    let (skills, _) = discover_skills(&state.config, Some(&ws.root))?;
     let Some(skill) = skills
         .into_iter()
         .filter(|skill| is_contained(&skill.dir, absolute_path))
@@ -6394,7 +6468,7 @@ fn tool_definition(name: &str) -> Option<Value> {
         tool_def(
             "open_workspace",
             "Open Workspace",
-            "Open a path inside an allowed root and return a workspace id, root project instructions, nested instruction file paths, and configured skill entrypoints.",
+            "Open a path inside an allowed root and return a workspace id, root project instructions, nested instruction file paths, and configured or workspace-local skill entrypoints.",
             json!({"type":"object","properties":{"path":{"type":"string","description":"Absolute path inside an allowed root."}},"required":["path"]}),
             json!({"type":"object","properties":{"workspace_id":{"type":"string"},"name":{"type":"string"},"instructions":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"truncated":{"type":"boolean"}},"required":["path","content","truncated"],"additionalProperties":false}},"available_instructions":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},"available_instructions_truncated":{"type":"boolean"},"skills":{"type":"array","items":{"type":"object","properties":{"skill_id":{"type":"string"},"name":{"type":"string"},"description":{"type":"string"},"path":{"type":"string"},"entrypoint":{"type":"string"}},"required":["skill_id","name","description","path","entrypoint"],"additionalProperties":false}},"skills_truncated":{"type":"boolean"}},"required":["workspace_id","name","instructions","available_instructions","available_instructions_truncated","skills","skills_truncated"],"additionalProperties":false}),
         ),
@@ -7094,6 +7168,7 @@ mod tests {
             owner_token: Some("secret".to_string()),
             public_base_url: None,
             state_dir: None,
+            auto_skill_roots: false,
         }
     }
 
@@ -7109,6 +7184,7 @@ mod tests {
             public_base_url: None,
             state_dir: None,
             skill_roots: vec![],
+            auto_skill_roots: true,
             no_interactive: false,
             force: false,
         }
@@ -7140,6 +7216,7 @@ mod tests {
             Some("https://example.trycloudflare.com")
         );
         assert_eq!(prompted.skill_roots, vec![skill_root.clone()]);
+        assert!(prompted.auto_skill_roots);
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("Codex connector setup"));
         assert!(output.contains("Allowed project roots"));
@@ -7169,6 +7246,24 @@ mod tests {
             prompted.skill_roots,
             vec![PathBuf::from("/explicit/skills")]
         );
+        assert!(prompted.auto_skill_roots);
+    }
+
+    #[test]
+    fn prompt_init_none_disables_auto_skill_roots() {
+        let root = temp_project();
+        let config_path =
+            env::temp_dir().join(format!("codex-connector-prompt-{}.json", Uuid::new_v4()));
+        let input = format!("{}\n8765\n\nnone\n", root.display());
+        let mut input = std::io::Cursor::new(input.into_bytes());
+        let mut output = Vec::new();
+        let prompted =
+            prompt_init_options(init_options_for_test(config_path), &mut input, &mut output)
+                .unwrap();
+
+        assert!(prompted.skill_roots.is_empty());
+        assert!(!prompted.auto_skill_roots);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -7645,6 +7740,144 @@ mod tests {
     }
 
     #[test]
+    fn open_workspace_auto_discovers_project_skill_roots() {
+        let root = temp_project();
+        let pi_skill_dir = root.join(".pi").join("skills").join("demo-pi");
+        let project_skill_dir = root.join("skills").join("demo-project");
+        fs::create_dir_all(&pi_skill_dir).unwrap();
+        fs::create_dir_all(&project_skill_dir).unwrap();
+        fs::write(
+            pi_skill_dir.join("SKILL.md"),
+            "---\nname: pi-skill\ndescription: Use project-local pi skills.\n---\n# PI Skill\n",
+        )
+        .unwrap();
+        fs::write(
+            project_skill_dir.join("SKILL.md"),
+            "---\nname: project-skill\ndescription: Use project skills.\n---\n# Project Skill\n",
+        )
+        .unwrap();
+        let mut raw = raw_config(root.clone());
+        raw.auto_skill_roots = true;
+        let config = validate_raw(raw).unwrap();
+        let state = AppState {
+            config: Arc::new(config),
+            registry: Arc::new(Mutex::new(WorkspaceRegistry::default())),
+            initialized_sessions: Arc::new(Mutex::new(InitializedSessions::default())),
+            oauth: None,
+            persisted_state: None,
+        };
+        let opened = open_workspace(&state, root.to_str().unwrap()).unwrap();
+        let names = opened["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|skill| skill["name"].as_str())
+            .collect::<HashSet<_>>();
+        assert!(names.contains("pi-skill"));
+        assert!(names.contains("project-skill"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn auto_skill_roots_can_be_disabled() {
+        let root = temp_project();
+        let skill_dir = root.join("skills").join("disabled-demo");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: disabled-skill\ndescription: Hidden when auto discovery is off.\n---\n# Hidden\n",
+        )
+        .unwrap();
+        let mut raw = raw_config(root.clone());
+        raw.auto_skill_roots = false;
+        let config = validate_raw(raw).unwrap();
+        let state = AppState {
+            config: Arc::new(config),
+            registry: Arc::new(Mutex::new(WorkspaceRegistry::default())),
+            initialized_sessions: Arc::new(Mutex::new(InitializedSessions::default())),
+            oauth: None,
+            persisted_state: None,
+        };
+        let opened = open_workspace(&state, root.to_str().unwrap()).unwrap();
+        assert_eq!(opened["skills"].as_array().unwrap().len(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn auto_skill_roots_ignore_workspace_symlink_escapes() {
+        let root = temp_project();
+        let external = temp_project();
+        let external_skill = external.join("leaked");
+        fs::create_dir_all(&external_skill).unwrap();
+        fs::write(
+            external_skill.join("SKILL.md"),
+            "---\nname: leaked-skill\ndescription: Outside workspace.\n---\n# Leaked\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&external, root.join("skills")).unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            fs::create_dir_all(root.join("skills")).unwrap();
+        }
+        let mut raw = raw_config(root.clone());
+        raw.auto_skill_roots = true;
+        let config = validate_raw(raw).unwrap();
+        let state = AppState {
+            config: Arc::new(config),
+            registry: Arc::new(Mutex::new(WorkspaceRegistry::default())),
+            initialized_sessions: Arc::new(Mutex::new(InitializedSessions::default())),
+            oauth: None,
+            persisted_state: None,
+        };
+        let opened = open_workspace(&state, root.to_str().unwrap()).unwrap();
+        assert!(opened["skills"].as_array().unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn existing_configs_without_auto_skill_roots_default_to_workspace_local_discovery() {
+        let root = temp_project();
+        let skill_dir = root.join(".pi").join("skills").join("upgrade-demo");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: upgrade-skill\ndescription: Existing config default.\n---\n# Upgrade\n",
+        )
+        .unwrap();
+        let raw: RawConfig = serde_json::from_value(json!({
+            "allowed_roots": [root],
+            "trust_level": "readonly",
+            "host": "127.0.0.1",
+            "port": 0,
+            "owner_token": "secret"
+        }))
+        .unwrap();
+        let config = validate_raw(raw).unwrap();
+        assert!(config.auto_skill_roots);
+        let state = AppState {
+            config: Arc::new(config),
+            registry: Arc::new(Mutex::new(WorkspaceRegistry::default())),
+            initialized_sessions: Arc::new(Mutex::new(InitializedSessions::default())),
+            oauth: None,
+            persisted_state: None,
+        };
+        let opened =
+            open_workspace(&state, state.config.allowed_roots[0].to_str().unwrap()).unwrap();
+        let names = opened["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|skill| skill["name"].as_str())
+            .collect::<HashSet<_>>();
+        assert!(names.contains("upgrade-skill"));
+        fs::remove_dir_all(state.config.allowed_roots[0].clone()).unwrap();
+    }
+
+    #[test]
     fn skill_resources_require_reading_skill_file_first() {
         let root = temp_project();
         let skill_root = temp_project();
@@ -7731,7 +7964,7 @@ mod tests {
         .unwrap();
         fs::write(skill_dir.join("references").join("guide.md"), "reference").unwrap();
         let mut raw = raw_config(root.clone());
-        raw.skill_roots = vec![skill_root];
+        raw.auto_skill_roots = true;
         let config = validate_raw(raw).unwrap();
         let state = AppState {
             config: Arc::new(config),

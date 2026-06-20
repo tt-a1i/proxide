@@ -75,7 +75,7 @@ MCP host 通过 `POST /mcp` 发送 JSON-RPC 2.0 消息。ChatGPT 这类网页端
 - `public_base_url` 会派生 Host allowlist；公网隧道 URL 不是 secret，真正的保护是 OAuth owner approval 或 owner token。
 - 校验 `Origin` 头防 DNS-rebinding，要求 `Content-Type: application/json` 防浏览器 simple-request 伪造，`GET` / `DELETE` 返回 405。
 - 所有 workspace 相对路径都强制包含校验（canonical path containment），拒绝绝对路径、`..`、final symlink；`search` 对每个候选重新校验并跳过 symlink，避免树内 symlink 读到 root 外文件。
-- `open_workspace` 不回传本机绝对路径（只回 basename）；它会返回根目录 `AGENTS.md` / `CLAUDE.md` / `CONTEXT.md` 内容、嵌套指令文件路径和 configured skills 的 `skill://.../SKILL.md` 入口。`read` 只有在读过某个 skill 的 `SKILL.md` 后，才允许读取该 skill 目录下其它资源。git 失败只回通用错误，不转发 git stderr。
+- `open_workspace` 不回传本机绝对路径（只回 basename）；它会返回根目录 `AGENTS.md` / `CLAUDE.md` / `CONTEXT.md` 内容、嵌套指令文件路径，以及显式配置或 workspace-local 自动发现的 skills 的 `skill://.../SKILL.md` 入口。自动 skill discovery 默认开启，只会查找 opened workspace 内真实目录 `.pi/skills` 和 `skills`，canonical 后仍必须留在 workspace 内；本机其它 skill 目录必须用 `--skill-root` 显式授权。如需关闭 workspace-local 自动发现，`init` 使用 `--no-auto-skill-roots` 或在 config 中设 `auto_skill_roots: false`。`read` 只有在读过某个 skill 的 `SKILL.md` 后，才允许读取该 skill 目录下其它资源。git 失败只回通用错误，不转发 git stderr。
 - MCP tool result 同时返回 `content`、`structuredContent` 和 Apps-compatible `_meta` 摘要；`_meta` 只放路径、计数、状态、字符数等 compact metadata，不重复文件正文、diff 或 shell 输出。
 - `search` 有时间、扫描文件数与单文件大小上限；打开的 workspace 数量有上限（LRU 淘汰）。
 - 两类错误分流：未知方法/工具、参数错误走 JSON-RPC error；路径逃逸、信任级别不足、文件缺失等走 `isError: true` 的正常结果。
@@ -250,7 +250,7 @@ Rust Connector CLI：
 ./bin/codex-connector worktrees cleanup
 ```
 
-交互式 setup 如果检测到当前 checkout 下的 `skills/`，会把它作为默认 skill root；如果不想开放 skill discovery，在该提示处输入 `none`。
+交互式 setup 如果检测到当前 checkout 下的 `skills/`，会把它作为显式 skill root 默认值；即使不手动填写，Rust connector 也会默认自动发现 opened workspace 内的 `.pi/skills` 和 `skills`。如需关闭自动发现，初始化时传 `--no-auto-skill-roots`，或在 skill root 提示处输入 `none`。
 
 发布前验证：
 

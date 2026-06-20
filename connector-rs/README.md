@@ -39,6 +39,12 @@ or agents to remember the Cargo manifest path.
   --skill-root /absolute/path/to/codex-pro/skills \
   --public-base-url "https://<tunnel-host>" --force
 
+# Disable automatic workspace-local skill discovery if the connector should
+# only expose explicitly configured skill roots.
+./bin/codex-connector \
+  init --root /absolute/path/to/project \
+  --no-auto-skill-roots --force
+
 # Temporary no-auth ChatGPT smoke test only.
 ./bin/codex-connector \
   init --root /absolute/path/to/project --no-owner-token --force
@@ -164,12 +170,19 @@ contents, pull request bodies, shell command bodies, or shell output.
 
 `open_workspace` also returns bounded root-level `AGENTS.md`, `CLAUDE.md`, and
 `CONTEXT.md` content when present, plus nested instruction file paths the host
-should read before working under those directories. It also returns configured
-skills as `skill://.../SKILL.md` entrypoints. `list_skills` returns the same
-skill entrypoint summaries without embedding full skill bodies. The `read` tool
-allows advertised `SKILL.md` entrypoints immediately, then unlocks other files
-inside that skill directory only after the entrypoint has been read in the same
-workspace session.
+should read before working under those directories. It also returns explicitly
+configured and workspace-local auto-discovered skills as
+`skill://.../SKILL.md` entrypoints. Automatic skill discovery is enabled by
+default and only looks in the opened workspace's real `.pi/skills` and
+`skills` directories after canonical containment checks. Other local skill
+directories must be explicitly authorized with `--skill-root`. Set
+`auto_skill_roots` to `false` in config, pass `--no-auto-skill-roots` during
+`init`, or type `none` at the interactive skill-root prompt to disable
+workspace-local automatic skill roots. `list_skills` returns explicitly
+configured global skill entrypoint summaries without embedding full skill
+bodies. The `read` tool allows advertised `SKILL.md` entrypoints immediately,
+then unlocks other files inside that skill directory only after the entrypoint
+has been read in the same workspace session.
 
 `show_changes` is the agent-facing change summary: it returns branch, HEAD,
 short status, bounded diff stat, bounded diff text, and recent change-oriented
