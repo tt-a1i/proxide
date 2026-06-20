@@ -38,7 +38,7 @@
 
 这是新增的设计方向：像 DevSpace 那样启动一个本地 MCP connector，让 ChatGPT Pro、Claude 或其他 MCP host 连接到用户允许的本地 workspace。这样即使本地 agent 不支持浏览器操作，也可以让网页端 GPT Pro 使用本地项目上下文。
 
-这个模式和 Bridge Mode 的信任边界完全不同：Connector Mode 是网页模型主动调用本地工具。默认只读，只开放 workspace、项目指令发现、skill 发现、read、search、list、git status/diff、patch preview、session 审计、review note / edit plan 恢复、managed worktree 列表等能力；`write` / `edit` / `apply_patch` / `move_path` / `shell` / `open_worktree` / PR 发布与状态刷新只在显式 `trust_level=execute` 时出现。
+这个模式和 Bridge Mode 的信任边界完全不同：Connector Mode 是网页模型主动调用本地工具。默认只读，只开放 workspace、项目指令发现、嵌套指令文件索引、skill 入口发现、受控 skill 资源读取、read、search、list、git status/diff、patch preview、session 审计、review note / edit plan 恢复、managed worktree 列表等能力；`write` / `edit` / `apply_patch` / `move_path` / `shell` / `open_worktree` / PR 发布与状态刷新只在显式 `trust_level=execute` 时出现。
 
 参考设计见 [skills/codex-web-bridge/references/mcp-connector-mode.md](skills/codex-web-bridge/references/mcp-connector-mode.md)。
 
@@ -74,7 +74,7 @@ MCP host 通过 `POST /mcp` 发送 JSON-RPC 2.0 消息。ChatGPT 这类网页端
 - `public_base_url` 会派生 Host allowlist；公网隧道 URL 不是 secret，真正的保护是 OAuth owner approval 或 owner token。
 - 校验 `Origin` 头防 DNS-rebinding，要求 `Content-Type: application/json` 防浏览器 simple-request 伪造，`GET` / `DELETE` 返回 405。
 - 所有 workspace 相对路径都强制包含校验（canonical path containment），拒绝绝对路径、`..`、final symlink；`search` 对每个候选重新校验并跳过 symlink，避免树内 symlink 读到 root 外文件。
-- `open_workspace` 不回传本机绝对路径（只回 basename）；git 失败只回通用错误，不转发 git stderr。
+- `open_workspace` 不回传本机绝对路径（只回 basename）；它会返回根目录 `AGENTS.md` / `CLAUDE.md` / `CONTEXT.md` 内容、嵌套指令文件路径和 configured skills 的 `skill://.../SKILL.md` 入口。`read` 只有在读过某个 skill 的 `SKILL.md` 后，才允许读取该 skill 目录下其它资源。git 失败只回通用错误，不转发 git stderr。
 - MCP tool result 同时返回 `content`、`structuredContent` 和 Apps-compatible `_meta` 摘要；`_meta` 只放路径、计数、状态、字符数等 compact metadata，不重复文件正文、diff 或 shell 输出。
 - `search` 有时间、扫描文件数与单文件大小上限；打开的 workspace 数量有上限（LRU 淘汰）。
 - 两类错误分流：未知方法/工具、参数错误走 JSON-RPC error；路径逃逸、信任级别不足、文件缺失等走 `isError: true` 的正常结果。

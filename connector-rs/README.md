@@ -150,9 +150,13 @@ queries, cwd values, outcomes, and bounded errors. It does not store file
 contents, pull request bodies, shell command bodies, or shell output.
 
 `open_workspace` also returns bounded root-level `AGENTS.md`, `CLAUDE.md`, and
-`CONTEXT.md` content when present. `list_skills` returns configured `SKILL.md`
-entrypoints; MCP hosts should read a skill's `SKILL.md` before relying on other
-files inside that skill directory.
+`CONTEXT.md` content when present, plus nested instruction file paths the host
+should read before working under those directories. It also returns configured
+skills as `skill://.../SKILL.md` entrypoints. `list_skills` returns the same
+skill entrypoint summaries without embedding full skill bodies. The `read` tool
+allows advertised `SKILL.md` entrypoints immediately, then unlocks other files
+inside that skill directory only after the entrypoint has been read in the same
+workspace session.
 
 `show_changes` is the agent-facing change summary: it returns branch, HEAD,
 short status, bounded diff stat, bounded diff text, and recent change-oriented

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  release-verify:
+    name: Release verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify release package
+        run: ./scripts/verify-release.sh
+
+  windows-rust:
+    name: Rust core (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Rust fmt
+        run: cargo fmt --manifest-path connector-rs/Cargo.toml -- --check
+
+      - name: Rust clippy
+        run: cargo clippy --manifest-path connector-rs/Cargo.toml -- -D warnings
+
+      - name: Rust build
+        run: cargo build --manifest-path connector-rs/Cargo.toml

@@ -46,6 +46,8 @@ const MAX_AUDIT_LOG_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_REVIEW_NOTES_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_REVIEW_NOTE_LINE_BYTES: usize = MAX_REVIEW_NOTE_BODY_BYTES + 8 * 1024;
 const MAX_INSTRUCTION_BYTES: usize = 16 * 1024;
+const MAX_AVAILABLE_INSTRUCTIONS: usize = 200;
+const MAX_INSTRUCTION_SCAN_ENTRIES: usize = 5000;
 const MAX_REVIEW_NOTE_BODY_BYTES: usize = 32 * 1024;
 const MAX_EDIT_PLAN_INTENT_BYTES: usize = 8 * 1024;
 const MAX_EDIT_PLAN_PATHS: usize = 50;
@@ -59,6 +61,7 @@ const MAX_SESSION_TOOL_CALLS: usize = 200;
 const MAX_SESSION_WORKSPACES: usize = 128;
 const MAX_RECENT_CHANGE_ACTIONS: usize = 25;
 const SEARCH_DEADLINE: Duration = Duration::from_secs(5);
+const INSTRUCTION_SCAN_DEADLINE: Duration = Duration::from_secs(2);
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(60);
 const GH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -86,11 +89,17 @@ const LATEST_PROTOCOL_VERSION: &str = "2025-06-18";
 
 const IGNORED_DIRS: &[&str] = &[
     ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".venv",
     "node_modules",
     "dist",
     "build",
     ".cache",
     "__pycache__",
+    "target",
+    "venv",
+    "vendor",
 ];
 
 #[derive(Debug, Clone, Copy, ValueEnum, Serialize, Deserialize, PartialEq, Eq)]
@@ -222,6 +231,29 @@ enum WorktreesCommand {
 #[derive(Debug, Clone)]
 struct Workspace {
     root: PathBuf,
+    activated_skill_dirs: HashSet<PathBuf>,
+}
+
+struct InstructionScan {
+    loaded: Vec<Value>,
+    available: Vec<Value>,
+    truncated: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SkillEntry {
+    id: String,
+    name: String,
+    description: String,
+    path: String,
+    entrypoint: String,
+    dir: PathBuf,
+}
+
+struct ReadTarget {
+    display_path: String,
+    absolute_path: PathBuf,
+    activate_skill_dir: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -1770,8 +1802,8 @@ fn handle_request(
                 LATEST_PROTOCOL_VERSION
             };
             let instructions = match state.config.trust_level {
-                TrustLevel::Execute => "Rust connector in execute mode. Open a workspace inside an allowed root, then read/list/search files, inspect git state, and use scoped write/edit tools only when the user intended local code mutation.",
-                _ => "Readonly Rust connector. Open a workspace inside an allowed root, then read/list/search files and inspect git state.",
+                TrustLevel::Execute => "Rust connector in execute mode. Open a workspace inside an allowed root, follow returned project instructions, read relevant nested instruction files before working under those directories, and read a skill's skill://.../SKILL.md entrypoint before reading other files from that skill. Use scoped write/edit tools only when the user intended local code mutation.",
+                _ => "Readonly Rust connector. Open a workspace inside an allowed root, follow returned project instructions, read relevant nested instruction files before working under those directories, and read a skill's skill://.../SKILL.md entrypoint before reading other files from that skill.",
             };
             rpc_result(
                 req_id,
@@ -3027,7 +3059,10 @@ fn summarize_result(tool: &str, payload: &Value) -> Value {
     match tool {
         "open_workspace" => json!({
             "workspace_id": payload.get("workspace_id"),
-            "name": payload.get("name")
+            "name": payload.get("name"),
+            "instructions": payload.get("instructions").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
+            "available_instructions": payload.get("available_instructions").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
+            "skills": payload.get("skills").and_then(Value::as_array).map(Vec::len).unwrap_or(0)
         }),
         "read" => json!({
             "path": payload.get("path"),
@@ -3384,7 +3419,16 @@ fn open_workspace(state: &AppState, path: &str) -> Result<Value> {
     }
     let (id, name, workspace) = register_workspace_root(state, resolved);
     let instructions = workspace_instructions(&workspace.root)?;
-    Ok(json!({"workspace_id": id, "name": name, "instructions": instructions}))
+    let (skills, skills_truncated) = skill_summaries(&state.config)?;
+    Ok(json!({
+        "workspace_id": id,
+        "name": name,
+        "instructions": instructions.loaded,
+        "available_instructions": instructions.available,
+        "available_instructions_truncated": instructions.truncated,
+        "skills": skills,
+        "skills_truncated": skills_truncated
+    }))
 }
 
 fn register_workspace_root(state: &AppState, root: PathBuf) -> (String, String, Workspace) {
@@ -3394,7 +3438,10 @@ fn register_workspace_root(state: &AppState, root: PathBuf) -> (String, String, 
         .and_then(|name| name.to_str())
         .unwrap_or("workspace")
         .to_string();
-    let workspace = Workspace { root };
+    let workspace = Workspace {
+        root,
+        activated_skill_dirs: HashSet::new(),
+    };
     let mut registry = state.registry.lock().unwrap();
     registry.workspaces.insert(id.clone(), workspace.clone());
     registry.order.push_back(id.clone());
@@ -3418,13 +3465,17 @@ fn workspace(state: &AppState, id: &str) -> Result<Workspace> {
 }
 
 fn read_file_tool(state: &AppState, args: &serde_json::Map<String, Value>) -> Result<Value> {
-    let ws = workspace(state, required(args, "workspace_id")?)?;
+    let workspace_id = required(args, "workspace_id")?;
+    let ws = workspace(state, workspace_id)?;
     let rel = required(args, "path")?;
-    let target = resolve_file(&ws, rel)?;
-    let metadata = fs::metadata(&target)?;
-    let (content, truncated_by_read) = read_bounded_text(&target, MAX_READ_BYTES)?;
+    let target = resolve_read_target(state, &ws, rel)?;
+    let metadata = fs::metadata(&target.absolute_path)?;
+    let (content, truncated_by_read) = read_bounded_text(&target.absolute_path, MAX_READ_BYTES)?;
+    if let Some(skill_dir) = target.activate_skill_dir {
+        activate_skill_dir(state, workspace_id, skill_dir);
+    }
     Ok(json!({
-        "path": rel,
+        "path": target.display_path,
         "content": content,
         "truncated": truncated_by_read || metadata.len() as usize > MAX_READ_BYTES
     }))
@@ -4861,9 +4912,10 @@ fn read_existing_text_for_mutation(path: &Path) -> Result<Option<String>> {
     Ok(Some(text))
 }
 
-fn workspace_instructions(root: &Path) -> Result<Vec<Value>> {
-    let mut instructions = Vec::new();
-    for name in ["AGENTS.md", "CLAUDE.md", "CONTEXT.md"] {
+fn workspace_instructions(root: &Path) -> Result<InstructionScan> {
+    let mut loaded = Vec::new();
+    let mut loaded_canonical = HashSet::new();
+    for name in instruction_file_names() {
         let path = root.join(name);
         if !path.exists() {
             continue;
@@ -4872,46 +4924,126 @@ fn workspace_instructions(root: &Path) -> Result<Vec<Value>> {
         if meta.file_type().is_symlink() || !meta.is_file() {
             continue;
         }
+        let canonical = path.canonicalize()?;
+        if !loaded_canonical.insert(canonical) {
+            continue;
+        }
         let (content, truncated) = read_bounded_text(&path, MAX_INSTRUCTION_BYTES)?;
-        instructions.push(json!({
+        loaded.push(json!({
             "path": name,
             "content": content,
             "truncated": truncated,
         }));
     }
-    Ok(instructions)
-}
 
-fn list_skills_tool(state: &AppState) -> Result<Value> {
-    let mut skills = Vec::new();
-    for root in &state.config.skill_roots {
-        collect_skills(root, &mut skills)?;
-        if skills.len() >= MAX_SKILLS {
+    let mut available_paths = Vec::new();
+    let mut available_canonical = HashSet::new();
+    let scan_deadline = Instant::now() + INSTRUCTION_SCAN_DEADLINE;
+    let mut scanned = 0usize;
+    let mut truncated = false;
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| !is_ignored_entry(entry))
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        scanned += 1;
+        if scanned > MAX_INSTRUCTION_SCAN_ENTRIES || Instant::now() > scan_deadline {
+            truncated = true;
+            break;
+        }
+        if entry.depth() <= 1 || !entry.file_type().is_file() {
+            continue;
+        }
+        let Some(file_name) = entry.file_name().to_str() else {
+            continue;
+        };
+        if !instruction_file_names().contains(&file_name) {
+            continue;
+        }
+        let canonical = entry
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| entry.path().to_path_buf());
+        if !is_contained(root, &canonical) || !available_canonical.insert(canonical) {
+            continue;
+        }
+        let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
+        available_paths.push(rel.to_string_lossy().to_string());
+        if available_paths.len() > MAX_AVAILABLE_INSTRUCTIONS {
+            truncated = true;
             break;
         }
     }
-    let truncated = skills.len() >= MAX_SKILLS;
-    skills.truncate(MAX_SKILLS);
+    available_paths.sort();
+    available_paths.truncate(MAX_AVAILABLE_INSTRUCTIONS);
+    let available = available_paths
+        .into_iter()
+        .map(|path| json!({ "path": path }))
+        .collect();
+    Ok(InstructionScan {
+        loaded,
+        available,
+        truncated,
+    })
+}
+
+fn list_skills_tool(state: &AppState) -> Result<Value> {
+    let (skills, truncated) = skill_summaries(&state.config)?;
     Ok(json!({"skills": skills, "truncated": truncated}))
 }
 
-fn collect_skills(root: &Path, skills: &mut Vec<Value>) -> Result<()> {
-    let candidates = std::iter::once(root.to_path_buf()).chain(
-        fs::read_dir(root)?
-            .filter_map(std::result::Result::ok)
-            .filter_map(|entry| {
-                let Ok(meta) = entry.file_type() else {
-                    return None;
-                };
-                if meta.is_dir() {
-                    Some(entry.path())
-                } else {
-                    None
-                }
-            }),
-    );
+fn skill_summaries(config: &Config) -> Result<(Vec<Value>, bool)> {
+    let (skills, truncated) = discover_skills(config)?;
+    Ok((
+        skills
+            .into_iter()
+            .map(|skill| {
+                json!({
+                    "skill_id": skill.id,
+                    "name": skill.name,
+                    "description": skill.description,
+                    "path": skill.path,
+                    "entrypoint": skill.entrypoint,
+                })
+            })
+            .collect(),
+        truncated,
+    ))
+}
+
+fn discover_skills(config: &Config) -> Result<(Vec<SkillEntry>, bool)> {
+    let mut skills = Vec::new();
+    for root in &config.skill_roots {
+        collect_skill_entries(root, &mut skills)?;
+        if skills.len() > MAX_SKILLS {
+            break;
+        }
+    }
+    skills.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let truncated = skills.len() > MAX_SKILLS;
+    skills.truncate(MAX_SKILLS);
+    Ok((skills, truncated))
+}
+
+fn collect_skill_entries(root: &Path, skills: &mut Vec<SkillEntry>) -> Result<()> {
+    let mut candidates = vec![root.to_path_buf()];
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            candidates.push(entry.path());
+        }
+    }
+    candidates.sort();
     for dir in candidates {
-        if skills.len() >= MAX_SKILLS {
+        if skills.len() > MAX_SKILLS {
             break;
         }
         let skill_md = dir.join("SKILL.md");
@@ -4922,15 +5054,32 @@ fn collect_skills(root: &Path, skills: &mut Vec<Value>) -> Result<()> {
         if meta.file_type().is_symlink() || !meta.is_file() {
             continue;
         }
-        let (content, truncated) = read_bounded_text(&skill_md, MAX_INSTRUCTION_BYTES)?;
+        let canonical_dir = dir
+            .canonicalize()
+            .with_context(|| format!("skill dir disappeared: {}", dir.display()))?;
+        if !is_contained(root, &canonical_dir) {
+            continue;
+        }
+        let (content, _) = read_bounded_text(&skill_md, MAX_INSTRUCTION_BYTES)?;
         let (name, description) = skill_metadata(&content);
-        skills.push(json!({
-            "name": name.unwrap_or_else(|| dir.file_name().and_then(|part| part.to_str()).unwrap_or("skill").to_string()),
-            "description": description.unwrap_or_default(),
-            "path": skill_md.strip_prefix(root).unwrap_or(&skill_md).to_string_lossy(),
-            "content": content,
-            "truncated": truncated,
-        }));
+        let id = skill_id(&canonical_dir);
+        skills.push(SkillEntry {
+            id: id.clone(),
+            name: name.unwrap_or_else(|| {
+                dir.file_name()
+                    .and_then(|part| part.to_str())
+                    .unwrap_or("skill")
+                    .to_string()
+            }),
+            description: description.unwrap_or_default(),
+            path: skill_md
+                .strip_prefix(root)
+                .unwrap_or(&skill_md)
+                .to_string_lossy()
+                .to_string(),
+            entrypoint: format!("skill://{id}/SKILL.md"),
+            dir: canonical_dir,
+        });
     }
     Ok(())
 }
@@ -4953,6 +5102,136 @@ fn skill_metadata(content: &str) -> (Option<String>, Option<String>) {
         }
     }
     (name, description)
+}
+
+fn instruction_file_names() -> &'static [&'static str] {
+    &[
+        "AGENTS.md",
+        "AGENTS.MD",
+        "CLAUDE.md",
+        "CLAUDE.MD",
+        "CONTEXT.md",
+        "CONTEXT.MD",
+    ]
+}
+
+fn resolve_read_target(state: &AppState, ws: &Workspace, rel: &str) -> Result<ReadTarget> {
+    if rel.starts_with("skill://") {
+        return resolve_skill_read_target(state, ws, rel);
+    }
+    let absolute_path = resolve_file(ws, rel)?;
+    if let Some(target) = skill_read_target_for_file(state, ws, rel, &absolute_path)? {
+        return Ok(target);
+    }
+    Ok(ReadTarget {
+        display_path: rel.to_string(),
+        absolute_path,
+        activate_skill_dir: None,
+    })
+}
+
+fn resolve_skill_read_target(state: &AppState, ws: &Workspace, uri: &str) -> Result<ReadTarget> {
+    let (skill_id, rel_path) = parse_skill_uri(uri)?;
+    let (skills, _) = discover_skills(&state.config)?;
+    let Some(skill) = skills.into_iter().find(|skill| skill.id == skill_id) else {
+        bail!("unknown skill id: {skill_id}");
+    };
+    let is_entrypoint = rel_path == "SKILL.md";
+    if !is_entrypoint && !ws.activated_skill_dirs.contains(&skill.dir) {
+        bail!(
+            "read {} before reading other files from this skill",
+            skill.entrypoint
+        );
+    }
+    let candidate = Path::new(&rel_path);
+    if candidate.is_absolute()
+        || candidate
+            .components()
+            .any(|part| matches!(part, Component::ParentDir))
+    {
+        bail!("skill path must be relative and may not contain '..'");
+    }
+    let absolute_path = skill.dir.join(candidate);
+    let meta = fs::symlink_metadata(&absolute_path)?;
+    if meta.file_type().is_symlink() {
+        bail!("path is a symlink");
+    }
+    if !meta.is_file() {
+        bail!("not a file");
+    }
+    let canonical = absolute_path.canonicalize()?;
+    if !is_contained(&skill.dir, &canonical) {
+        bail!("skill path escapes skill root");
+    }
+    Ok(ReadTarget {
+        display_path: format!("skill://{skill_id}/{rel_path}"),
+        absolute_path: canonical,
+        activate_skill_dir: is_entrypoint.then_some(skill.dir),
+    })
+}
+
+fn skill_read_target_for_file(
+    state: &AppState,
+    ws: &Workspace,
+    rel: &str,
+    absolute_path: &Path,
+) -> Result<Option<ReadTarget>> {
+    if state.config.skill_roots.is_empty() {
+        return Ok(None);
+    }
+    let (skills, _) = discover_skills(&state.config)?;
+    let Some(skill) = skills
+        .into_iter()
+        .filter(|skill| is_contained(&skill.dir, absolute_path))
+        .max_by_key(|skill| skill.dir.components().count())
+    else {
+        return Ok(None);
+    };
+    let skill_file = skill.dir.join("SKILL.md");
+    let is_entrypoint = skill_file
+        .canonicalize()
+        .map(|path| path == absolute_path)
+        .unwrap_or(false);
+    if !is_entrypoint && !ws.activated_skill_dirs.contains(&skill.dir) {
+        bail!(
+            "read {} before reading other files from this skill",
+            skill.entrypoint
+        );
+    }
+    Ok(Some(ReadTarget {
+        display_path: rel.to_string(),
+        absolute_path: absolute_path.to_path_buf(),
+        activate_skill_dir: is_entrypoint.then_some(skill.dir),
+    }))
+}
+
+fn parse_skill_uri(uri: &str) -> Result<(String, String)> {
+    let Some(rest) = uri.strip_prefix("skill://") else {
+        bail!("skill uri must start with skill://");
+    };
+    let Some((skill_id, rel_path)) = rest.split_once('/') else {
+        bail!("skill uri must include a skill id and path");
+    };
+    if skill_id.is_empty() || rel_path.is_empty() {
+        bail!("skill uri must include a skill id and path");
+    }
+    Ok((skill_id.to_string(), rel_path.to_string()))
+}
+
+fn activate_skill_dir(state: &AppState, workspace_id: &str, skill_dir: PathBuf) {
+    let mut registry = state.registry.lock().unwrap();
+    if let Some(workspace) = registry.workspaces.get_mut(workspace_id) {
+        workspace.activated_skill_dirs.insert(skill_dir);
+    }
+}
+
+fn skill_id(dir: &Path) -> String {
+    let digest = Sha256::digest(dir.to_string_lossy().as_bytes());
+    digest
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn required<'a>(args: &'a serde_json::Map<String, Value>, key: &str) -> Result<&'a str> {
@@ -5675,16 +5954,16 @@ fn tool_definition(name: &str) -> Option<Value> {
         tool_def(
             "open_workspace",
             "Open Workspace",
-            "Open a path inside an allowed root and return a workspace id.",
+            "Open a path inside an allowed root and return a workspace id, root project instructions, nested instruction file paths, and configured skill entrypoints.",
             json!({"type":"object","properties":{"path":{"type":"string","description":"Absolute path inside an allowed root."}},"required":["path"]}),
-            json!({"type":"object","properties":{"workspace_id":{"type":"string"},"name":{"type":"string"},"instructions":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"truncated":{"type":"boolean"}},"required":["path","content","truncated"],"additionalProperties":false}}},"required":["workspace_id","name","instructions"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"workspace_id":{"type":"string"},"name":{"type":"string"},"instructions":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"truncated":{"type":"boolean"}},"required":["path","content","truncated"],"additionalProperties":false}},"available_instructions":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},"available_instructions_truncated":{"type":"boolean"},"skills":{"type":"array","items":{"type":"object","properties":{"skill_id":{"type":"string"},"name":{"type":"string"},"description":{"type":"string"},"path":{"type":"string"},"entrypoint":{"type":"string"}},"required":["skill_id","name","description","path","entrypoint"],"additionalProperties":false}},"skills_truncated":{"type":"boolean"}},"required":["workspace_id","name","instructions","available_instructions","available_instructions_truncated","skills","skills_truncated"],"additionalProperties":false}),
         ),
         "read" =>
         tool_def(
             "read",
             "Read",
-            "Read bounded text from a workspace-relative file.",
-            json!({"type":"object","properties":{"workspace_id":{"type":"string"},"path":{"type":"string"}},"required":["workspace_id","path"]}),
+            "Read bounded text from a workspace-relative file, or from a configured skill:// entrypoint/resource. Skill resources other than SKILL.md require reading that skill's SKILL.md first.",
+            json!({"type":"object","properties":{"workspace_id":{"type":"string"},"path":{"type":"string","description":"Workspace-relative file path, or skill://<skill_id>/SKILL.md / skill://<skill_id>/<resource>."}},"required":["workspace_id","path"]}),
             json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"truncated":{"type":"boolean"}},"required":["path","content","truncated"],"additionalProperties":false}),
         ),
         "list" =>
@@ -5859,9 +6138,9 @@ fn tool_definition(name: &str) -> Option<Value> {
         tool_def(
             "list_skills",
             "List Skills",
-            "List configured agent skills and their SKILL.md entrypoints. Hosts must read a skill's SKILL.md before using files from that skill directory.",
+            "List configured agent skills and their skill:// SKILL.md entrypoints. Hosts must read a skill's SKILL.md before using files from that skill directory.",
             json!({"type":"object","properties":{}}),
-            json!({"type":"object","properties":{"skills":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"path":{"type":"string"},"content":{"type":"string"},"truncated":{"type":"boolean"}},"required":["name","description","path","content","truncated"],"additionalProperties":false}},"truncated":{"type":"boolean"}},"required":["skills","truncated"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"skills":{"type":"array","items":{"type":"object","properties":{"skill_id":{"type":"string"},"name":{"type":"string"},"description":{"type":"string"},"path":{"type":"string"},"entrypoint":{"type":"string"}},"required":["skill_id","name","description","path","entrypoint"],"additionalProperties":false}},"truncated":{"type":"boolean"}},"required":["skills","truncated"],"additionalProperties":false}),
         ),
         "create_note" =>
         review_tool_def(
@@ -6664,7 +6943,10 @@ mod tests {
     fn resolve_path_rejects_parent_traversal() {
         let root = temp_project();
         fs::write(root.join("a.txt"), "hello").unwrap();
-        let ws = Workspace { root: root.clone() };
+        let ws = Workspace {
+            root: root.clone(),
+            activated_skill_dirs: HashSet::new(),
+        };
         let err = resolve_file(&ws, "../a.txt").unwrap_err().to_string();
         assert!(err.contains("may not contain '..'"));
         fs::remove_dir_all(root).unwrap();
@@ -6677,7 +6959,10 @@ mod tests {
         fs::write(outside.join("secret.txt"), "secret").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("leak.txt")).unwrap();
-        let ws = Workspace { root: root.clone() };
+        let ws = Workspace {
+            root: root.clone(),
+            activated_skill_dirs: HashSet::new(),
+        };
         let err = resolve_file(&ws, "leak.txt").unwrap_err().to_string();
         assert!(err.contains("symlink"));
         fs::remove_dir_all(root).unwrap();
@@ -6709,8 +6994,12 @@ mod tests {
     #[test]
     fn open_workspace_returns_bounded_project_instructions() {
         let root = temp_project();
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::create_dir_all(root.join("target")).unwrap();
         fs::write(root.join("AGENTS.md"), "agent guidance").unwrap();
         fs::write(root.join("CONTEXT.md"), "context guidance").unwrap();
+        fs::write(root.join("nested").join("AGENTS.md"), "nested guidance").unwrap();
+        fs::write(root.join("target").join("AGENTS.md"), "ignored guidance").unwrap();
         let config = validate_raw(raw_config(root.clone())).unwrap();
         let state = AppState {
             config: Arc::new(config),
@@ -6724,6 +7013,10 @@ mod tests {
         assert_eq!(instructions.len(), 2);
         assert_eq!(instructions[0]["path"], "AGENTS.md");
         assert_eq!(instructions[0]["content"], "agent guidance");
+        let available = opened["available_instructions"].as_array().unwrap();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0]["path"], "nested/AGENTS.md");
+        assert_eq!(opened["available_instructions_truncated"], false);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -6752,12 +7045,147 @@ mod tests {
         assert_eq!(listed["skills"][0]["name"], "demo-skill");
         assert_eq!(listed["skills"][0]["description"], "Use for demo tasks.");
         assert_eq!(listed["skills"][0]["path"], "demo/SKILL.md");
-        assert!(listed["skills"][0]["content"]
+        assert!(listed["skills"][0]["entrypoint"]
             .as_str()
             .unwrap()
-            .contains("# Demo"));
+            .starts_with("skill://"));
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(skill_root).unwrap();
+    }
+
+    #[test]
+    fn skill_resources_require_reading_skill_file_first() {
+        let root = temp_project();
+        let skill_root = temp_project();
+        let skill_dir = skill_root.join("demo");
+        fs::create_dir_all(skill_dir.join("references")).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo-skill\ndescription: Use for demo tasks.\n---\n# Demo\n",
+        )
+        .unwrap();
+        fs::write(skill_dir.join("references").join("guide.md"), "reference").unwrap();
+        let mut raw = raw_config(root.clone());
+        raw.skill_roots = vec![skill_root.clone()];
+        let config = validate_raw(raw).unwrap();
+        let state = AppState {
+            config: Arc::new(config),
+            registry: Arc::new(Mutex::new(WorkspaceRegistry::default())),
+            initialized_sessions: Arc::new(Mutex::new(InitializedSessions::default())),
+            oauth: None,
+            persisted_state: None,
+        };
+        let opened = open_workspace(&state, root.to_str().unwrap()).unwrap();
+        let workspace_id = opened["workspace_id"].as_str().unwrap().to_string();
+        let entrypoint = opened["skills"][0]["entrypoint"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let skill_id = opened["skills"][0]["skill_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let resource_uri = format!("skill://{skill_id}/references/guide.md");
+        let resource_before_skill = read_file_tool(
+            &state,
+            &serde_json::Map::from_iter([
+                ("workspace_id".to_string(), json!(workspace_id)),
+                ("path".to_string(), json!(resource_uri)),
+            ]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(resource_before_skill.contains("before reading other files"));
+        let skill_read = read_file_tool(
+            &state,
+            &serde_json::Map::from_iter([
+                (
+                    "workspace_id".to_string(),
+                    json!(opened["workspace_id"].as_str().unwrap()),
+                ),
+                ("path".to_string(), json!(entrypoint)),
+            ]),
+        )
+        .unwrap();
+        assert!(skill_read["content"].as_str().unwrap().contains("# Demo"));
+        let resource_after_skill = read_file_tool(
+            &state,
+            &serde_json::Map::from_iter([
+                (
+                    "workspace_id".to_string(),
+                    json!(opened["workspace_id"].as_str().unwrap()),
+                ),
+                (
+                    "path".to_string(),
+                    json!(format!("skill://{skill_id}/references/guide.md")),
+                ),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(resource_after_skill["content"], "reference");
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(skill_root).unwrap();
+    }
+
+    #[test]
+    fn workspace_relative_skill_paths_use_same_entrypoint_guard() {
+        let root = temp_project();
+        let skill_root = root.join("skills");
+        let skill_dir = skill_root.join("demo");
+        fs::create_dir_all(skill_dir.join("references")).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo-skill\ndescription: Use for demo tasks.\n---\n# Demo\n",
+        )
+        .unwrap();
+        fs::write(skill_dir.join("references").join("guide.md"), "reference").unwrap();
+        let mut raw = raw_config(root.clone());
+        raw.skill_roots = vec![skill_root];
+        let config = validate_raw(raw).unwrap();
+        let state = AppState {
+            config: Arc::new(config),
+            registry: Arc::new(Mutex::new(WorkspaceRegistry::default())),
+            initialized_sessions: Arc::new(Mutex::new(InitializedSessions::default())),
+            oauth: None,
+            persisted_state: None,
+        };
+        let opened = open_workspace(&state, root.to_str().unwrap()).unwrap();
+        let workspace_id = opened["workspace_id"].as_str().unwrap().to_string();
+        let blocked = read_file_tool(
+            &state,
+            &serde_json::Map::from_iter([
+                ("workspace_id".to_string(), json!(workspace_id)),
+                ("path".to_string(), json!("skills/demo/references/guide.md")),
+            ]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(blocked.contains("before reading other files"));
+        let skill_read = read_file_tool(
+            &state,
+            &serde_json::Map::from_iter([
+                (
+                    "workspace_id".to_string(),
+                    json!(opened["workspace_id"].as_str().unwrap()),
+                ),
+                ("path".to_string(), json!("skills/demo/SKILL.md")),
+            ]),
+        )
+        .unwrap();
+        assert!(skill_read["content"].as_str().unwrap().contains("# Demo"));
+        let resource_after_skill = read_file_tool(
+            &state,
+            &serde_json::Map::from_iter([
+                (
+                    "workspace_id".to_string(),
+                    json!(opened["workspace_id"].as_str().unwrap()),
+                ),
+                ("path".to_string(), json!("skills/demo/references/guide.md")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(resource_after_skill["content"], "reference");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

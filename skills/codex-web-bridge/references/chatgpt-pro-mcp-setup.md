@@ -21,6 +21,10 @@ Official references:
 - ChatGPT Pro is the MCP host. It connects to the local server through an HTTPS
   endpoint and calls tools such as `open_workspace`, `read`, `search`, `list`,
   `git_status`, `git_diff`, `show_session`, and `list_skills`.
+- `open_workspace` returns root project instructions, nested instruction file
+  paths, and configured skill entrypoints. A skill entrypoint looks like
+  `skill://<skill_id>/SKILL.md`; ChatGPT must read that entrypoint before the
+  connector allows reading other files from the same skill directory.
 - Persistent ChatGPT use should use the Rust connector's OAuth owner approval
   flow. The owner approval password stays in `state_dir`; ChatGPT receives only
   OAuth access and refresh tokens.

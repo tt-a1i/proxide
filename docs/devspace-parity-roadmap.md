@@ -40,8 +40,10 @@ Implemented here:
   artifacts; `show_review` / `render_review` aggregate them into an agent
   handoff surface.
 - Instruction and skill discovery foundation: `open_workspace` returns bounded
-  `AGENTS.md` / `CLAUDE.md` / `CONTEXT.md` content when present, and
-  `list_skills` exposes configured `SKILL.md` entrypoints.
+  root `AGENTS.md` / `CLAUDE.md` / `CONTEXT.md` content, nested instruction
+  file paths, and configured `skill://.../SKILL.md` entrypoints. `read`
+  enforces that a skill's `SKILL.md` entrypoint is read before other files in
+  that skill directory can be read.
 - Execute edit/write foundation: explicit `trust_level=execute` exposes scoped
   `write`, exact-match `edit`, bounded unified-diff `apply_patch`, and
   `move_path` tools with containment checks and bounded outputs.
@@ -88,6 +90,7 @@ Still missing versus DevSpace:
   review-handoff, pull-request handoff, and edit-plan history cards.
 - Published registry/tap install path beyond the generated source-checkout
   release package.
+- Interactive first-run CLI prompts beyond explicit `init --root` flags.
 
 ## Parity Phases
 
@@ -233,14 +236,18 @@ Goal: make the MCP host behave more like a local coding agent.
 Deliverables:
 
 - `open_workspace` returns relevant `AGENTS.md`, `CLAUDE.md`, and `CONTEXT.md`
-  instructions when present. Status: implemented for root-level files.
+  instructions when present. Status: implemented for root-level files and
+  nested instruction path discovery.
 - Skill discovery from configured skill directories. Status: partial,
-  explicitly configured `skill_roots` are supported.
+  explicitly configured `skill_roots` are supported and surfaced from
+  `open_workspace` and `list_skills`.
 - A tool or structured field that lists available skills and their `SKILL.md`
-  entrypoints. Status: implemented as `list_skills`.
+  entrypoints. Status: implemented as `open_workspace` skill summaries and
+  `list_skills`.
 - Guardrail: the host must read a skill's `SKILL.md` before using files inside
-  that skill directory. Status: documented in the tool description; richer
-  enforcement is still future work.
+  that skill directory. Status: implemented in `read` for `skill://` resources:
+  advertised `SKILL.md` entrypoints can be read immediately, while other skill
+  files require that entrypoint to have been read in the same workspace session.
 
 ### P7: ChatGPT Apps Widgets And Change Summaries
 
@@ -293,6 +300,10 @@ Deliverables:
 - Release checklist that runs unit tests, CLI smoke tests, and a ChatGPT MCP
   smoke prompt. Status: implemented as `scripts/verify-release.sh` with local
   MCP smoke, installer smoke, package smoke, and printed manual ChatGPT prompt.
+- Public CI signal. Status: implemented as `.github/workflows/ci.yml`; Linux
+  and macOS run the release verifier, while Windows runs Rust fmt, clippy, and
+  build as a compile smoke. Full Windows runtime tests remain future work
+  because the shell tool currently requires a Bash-compatible shell.
 
 ## Differentiators To Preserve
 
