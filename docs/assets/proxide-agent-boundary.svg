@@ -1,0 +1,70 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Proxide agent boundary map</title>
+  <desc id="desc">A Chinese technical illustration showing how Proxide separates local agents, MCP boundary, GPT Pro, and local workspace actions.</desc>
+  <rect width="1280" height="720" rx="28" fill="#FBF6EA"/>
+  <g opacity=".34" stroke="#E5D8C2" stroke-width="1">
+    <path d="M70 120H1210M70 180H1210M70 240H1210M70 300H1210M70 360H1210M70 420H1210M70 480H1210M70 540H1210M70 600H1210"/>
+    <path d="M160 70V650M320 70V650M480 70V650M640 70V650M800 70V650M960 70V650M1120 70V650"/>
+  </g>
+  <text x="70" y="82" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="34" font-weight="800">Proxide 不是把浏览器遥控器交给 Agent</text>
+  <text x="70" y="120" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="20">它把“谁能看、谁能写、谁能执行”拆成几道窄门。</text>
+  <path d="M70 138C210 148 406 134 555 141" stroke="#C58A3A" stroke-width="5" stroke-linecap="round"/>
+
+  <g transform="translate(72 198)">
+    <path d="M0 24C70 6 250 6 318 24C334 84 332 310 314 370C230 392 78 388 8 370C-12 298 -14 92 0 24Z" fill="#FFFDF8" stroke="#173C37" stroke-width="3"/>
+    <text x="34" y="62" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="25" font-weight="800">本地 Agent</text>
+    <text x="34" y="105" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="18">Codex</text>
+    <text x="34" y="138" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="18">Claude Code</text>
+    <text x="34" y="171" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="18">Cursor / Cline</text>
+    <text x="34" y="204" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="18">没有浏览器能力的 Agent</text>
+    <path d="M32 242H286" stroke="#E7D6B6" stroke-width="2"/>
+    <text x="34" y="280" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="18" font-weight="700">只需要会做一件事：</text>
+    <text x="34" y="314" fill="#173C37" font-family="Menlo, Consolas, monospace" font-size="17">codex-connector serve</text>
+  </g>
+
+  <g transform="translate(462 158)">
+    <path d="M16 22C102 0 286 4 360 24C386 104 382 398 356 478C266 500 92 494 20 474C-10 382 -8 108 16 22Z" fill="#EAF3ED" stroke="#173C37" stroke-width="4"/>
+    <text x="76" y="70" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="30" font-weight="900">Proxide 边界层</text>
+    <g transform="translate(54 112)">
+      <rect x="0" y="0" width="270" height="54" rx="14" fill="#FFF8E8" stroke="#173C37" stroke-width="2"/>
+      <text x="24" y="34" fill="#173C37" font-family="Menlo, Consolas, monospace" font-size="18">/mcp + Mcp-Session-Id</text>
+    </g>
+    <g transform="translate(54 186)">
+      <rect x="0" y="0" width="270" height="54" rx="14" fill="#FFFDF8" stroke="#173C37" stroke-width="2"/>
+      <text x="24" y="34" fill="#173C37" font-family="Menlo, Consolas, monospace" font-size="18">OAuth owner approval</text>
+    </g>
+    <g transform="translate(54 260)">
+      <rect x="0" y="0" width="270" height="54" rx="14" fill="#FFF8E8" stroke="#173C37" stroke-width="2"/>
+      <text x="24" y="34" fill="#173C37" font-family="Menlo, Consolas, monospace" font-size="18">readonly / handoff / execute</text>
+    </g>
+    <g transform="translate(54 334)">
+      <rect x="0" y="0" width="270" height="54" rx="14" fill="#FFFDF8" stroke="#173C37" stroke-width="2"/>
+      <text x="24" y="34" fill="#173C37" font-family="Menlo, Consolas, monospace" font-size="18">tool / write / shell modes</text>
+    </g>
+    <text x="58" y="440" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="18">审计只记摘要，不存文件正文或 shell 输出。</text>
+  </g>
+
+  <g transform="translate(904 168)">
+    <path d="M8 20C72 2 238 6 306 22C328 84 324 228 304 286C222 306 80 302 12 286C-10 222 -10 82 8 20Z" fill="#173C37" stroke="#173C37" stroke-width="3"/>
+    <text x="42" y="66" fill="#FFF7EA" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="28" font-weight="900">GPT Pro</text>
+    <text x="42" y="110" fill="#D6E1DC" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="18">读 README / diff / skills</text>
+    <text x="42" y="144" fill="#D6E1DC" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="18">写 review note / edit plan</text>
+    <text x="42" y="178" fill="#D6E1DC" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="18">必要时请求受控执行</text>
+    <text x="42" y="236" fill="#F0B86E" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="18" font-weight="800">不能绕过 Proxide 直接碰本地仓库</text>
+  </g>
+
+  <g transform="translate(904 492)">
+    <path d="M8 12C82 0 234 2 306 14C320 58 318 122 304 162C220 176 80 172 12 162C-8 118 -8 58 8 12Z" fill="#FFF8E8" stroke="#173C37" stroke-width="3"/>
+    <text x="42" y="58" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="25" font-weight="900">本地仓库</text>
+    <text x="42" y="100" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="18">files · git · worktree · state</text>
+  </g>
+
+  <g stroke="#C58A3A" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M390 346C430 330 450 322 478 318"/>
+    <path d="M822 292C854 244 874 226 912 224"/>
+    <path d="M822 470C862 522 884 554 914 566"/>
+  </g>
+  <path d="M470 309L490 316L474 330Z" fill="#C58A3A"/>
+  <path d="M904 216L924 224L906 236Z" fill="#C58A3A"/>
+  <path d="M906 558L924 570L904 578Z" fill="#C58A3A"/>
+</svg>

@@ -1,0 +1,83 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Proxide first run setup strip</title>
+  <desc id="desc">A Chinese sequence strip showing init, doctor, serve, tunnel, ChatGPT connector, and smoke test.</desc>
+  <rect width="1280" height="720" rx="28" fill="#FBF6EA"/>
+  <text x="72" y="82" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="34" font-weight="900">第一次接入，不应该靠猜</text>
+  <text x="72" y="120" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="20">Proxide 把人和 Agent 都能照着走的步骤写成了 runbook。</text>
+  <path d="M72 140C210 150 398 134 536 142" stroke="#C58A3A" stroke-width="5" stroke-linecap="round"/>
+
+  <g transform="translate(72 194)">
+    <rect x="0" y="0" width="180" height="250" rx="20" fill="#FFFDF8" stroke="#173C37" stroke-width="3"/>
+    <text x="24" y="48" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="22" font-weight="900">1. init</text>
+    <text x="24" y="92" fill="#5E6D68" font-family="Menlo, Consolas, monospace" font-size="16">--root</text>
+    <text x="24" y="122" fill="#5E6D68" font-family="Menlo, Consolas, monospace" font-size="16">--skill-root</text>
+    <text x="24" y="152" fill="#5E6D68" font-family="Menlo, Consolas, monospace" font-size="16">--public-base-url</text>
+    <path d="M24 184H156" stroke="#E7D6B6" stroke-width="2"/>
+    <text x="24" y="220" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">生成配置和 owner password</text>
+  </g>
+
+  <g transform="translate(282 194)">
+    <rect x="0" y="0" width="180" height="250" rx="20" fill="#EAF3ED" stroke="#173C37" stroke-width="3"/>
+    <text x="24" y="48" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="22" font-weight="900">2. doctor</text>
+    <text x="24" y="92" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">检查 endpoint</text>
+    <text x="24" y="124" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">检查 auth</text>
+    <text x="24" y="156" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">检查 modes</text>
+    <path d="M24 184H156" stroke="#D8C6A8" stroke-width="2"/>
+    <text x="24" y="220" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">先诊断，再接网页</text>
+  </g>
+
+  <g transform="translate(492 194)">
+    <rect x="0" y="0" width="180" height="250" rx="20" fill="#FFF8E8" stroke="#173C37" stroke-width="3"/>
+    <text x="24" y="48" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="22" font-weight="900">3. serve</text>
+    <text x="24" y="92" fill="#5E6D68" font-family="Menlo, Consolas, monospace" font-size="16">127.0.0.1:8765</text>
+    <text x="24" y="126" fill="#5E6D68" font-family="Menlo, Consolas, monospace" font-size="16">POST /mcp</text>
+    <text x="24" y="160" fill="#5E6D68" font-family="Menlo, Consolas, monospace" font-size="16">initialize</text>
+    <path d="M24 184H156" stroke="#E7D6B6" stroke-width="2"/>
+    <text x="24" y="220" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">本地先跑起来</text>
+  </g>
+
+  <g transform="translate(702 194)">
+    <rect x="0" y="0" width="180" height="250" rx="20" fill="#FFFDF8" stroke="#173C37" stroke-width="3"/>
+    <text x="24" y="48" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="22" font-weight="900">4. tunnel</text>
+    <text x="24" y="92" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">HTTPS endpoint</text>
+    <text x="24" y="126" fill="#5E6D68" font-family="Menlo, Consolas, monospace" font-size="16">https://.../mcp</text>
+    <text x="24" y="160" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">短期 smoke 或持久 OAuth</text>
+    <path d="M24 184H156" stroke="#E7D6B6" stroke-width="2"/>
+    <text x="24" y="220" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">公网 URL 不是 secret</text>
+  </g>
+
+  <g transform="translate(912 194)">
+    <rect x="0" y="0" width="180" height="250" rx="20" fill="#EAF3ED" stroke="#173C37" stroke-width="3"/>
+    <text x="24" y="48" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="22" font-weight="900">5. ChatGPT</text>
+    <text x="24" y="92" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">Developer mode</text>
+    <text x="24" y="124" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">Create connector</text>
+    <text x="24" y="156" fill="#5E6D68" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">OAuth approval</text>
+    <path d="M24 184H156" stroke="#D8C6A8" stroke-width="2"/>
+    <text x="24" y="220" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="17">人输入 owner password</text>
+  </g>
+
+  <g transform="translate(1122 194)">
+    <rect x="0" y="0" width="100" height="250" rx="20" fill="#173C37" stroke="#173C37" stroke-width="3"/>
+    <text x="22" y="48" fill="#FFF7EA" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="22" font-weight="900">6</text>
+    <text x="22" y="92" fill="#D6E1DC" font-family="Menlo, Consolas, monospace" font-size="15">open</text>
+    <text x="22" y="122" fill="#D6E1DC" font-family="Menlo, Consolas, monospace" font-size="15">read</text>
+    <text x="22" y="166" fill="#F0B86E" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="16" font-weight="800">smoke</text>
+    <text x="22" y="198" fill="#F0B86E" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="16" font-weight="800">test</text>
+  </g>
+
+  <g stroke="#C58A3A" stroke-width="4" stroke-linecap="round">
+    <path d="M252 320H282M462 320H492M672 320H702M882 320H912M1092 320H1122"/>
+  </g>
+  <g fill="#C58A3A">
+    <path d="M278 312L294 320L278 328Z"/>
+    <path d="M488 312L504 320L488 328Z"/>
+    <path d="M698 312L714 320L698 328Z"/>
+    <path d="M908 312L924 320L908 328Z"/>
+    <path d="M1118 312L1134 320L1118 328Z"/>
+  </g>
+
+  <g transform="translate(160 532)">
+    <path d="M8 6C244 -4 758 0 960 10C976 38 970 72 956 96C718 106 236 104 12 94C-4 66 -2 30 8 6Z" fill="#FFFDF8" stroke="#C58A3A" stroke-width="2.5"/>
+    <text x="40" y="60" fill="#173C37" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="23" font-weight="800">验证只看两件事：ChatGPT 调了 open_workspace，再 read 了 README.md。</text>
+  </g>
+</svg>
