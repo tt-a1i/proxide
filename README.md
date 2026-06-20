@@ -80,6 +80,10 @@ https://<tunnel-host>/mcp
 
 Proxide 吸收了两个相邻方向的优点：[Waishnav/devspace](https://github.com/Waishnav/devspace) 证明了 ChatGPT-local-workspace MCP 对 Agent 编码有价值；[rebel0789/codexpro](https://github.com/rebel0789/codexpro) 强调了首次 setup、doctor、tool mode、handoff/fallback 文档和新手体验。Proxide 在这些基础上做了更适合任意 Agent 的组合：
 
+<p align="center">
+  <img src="docs/assets/proxide-comparison.png" alt="Hand-drawn comparison: ordinary bridge is browser-only with weak auth and no audit; Proxide supports any Agent, Rust MCP, browser fallback, handoff first, and audit trail." width="920">
+</p>
+
 - **Rust production MCP server**：生产方向落在 `connector-rs/`，不是临时 Python demo；支持标准 MCP lifecycle、HTTP `/mcp`、session id、OAuth owner approval、owner token 调试和 release 安装。
 - **Bridge + Connector 双模式**：有 MCP 的 Agent 走 connector；没有 MCP 或不能连本地服务时，仍可用 browser/manual bridge 把 scrub 后的上下文交给网页强模型。
 - **面向 Agent 的工具面预设**：`tool_mode=minimal|standard|full` 控制工具数量，`write_mode=off|handoff|workspace` 控制是否写源码，`shell_mode=off|safe|full` 控制 shell 暴露范围。弱 Agent 不需要看到完整工具集，强 Agent 可以逐步升级。
