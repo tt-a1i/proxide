@@ -1,6 +1,6 @@
-# Codex Connector RS
+# Proxide Connector RS
 
-Rust is the production MCP connector direction for `codex-web-bridge`.
+Rust is the production MCP connector direction for Proxide.
 
 The Python `connector/` package remains as a protocol reference while this
 crate reaches feature parity, but new MCP service work should land here.
@@ -103,7 +103,7 @@ full connector checkout or unpacked release package available when configuring
 After a tag release is published, install without a source checkout:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tt-a1i/codex-web-bridge/main/scripts/install-release.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tt-a1i/proxide/main/scripts/install-release.sh | bash
 ```
 
 That script downloads the matching release tarball, verifies the SHA-256 file,

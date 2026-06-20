@@ -3,7 +3,7 @@ name = "codex-web-bridge-connector"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Rust MCP connector for codex-web-bridge"
+description = "Rust MCP connector for Proxide"
 
 [[bin]]
 name = "codex-connector"

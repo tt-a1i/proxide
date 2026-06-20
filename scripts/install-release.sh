@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="${REPO:-tt-a1i/codex-web-bridge}"
+REPO="${REPO:-tt-a1i/proxide}"
 VERSION="${VERSION:-latest}"
 PREFIX="${PREFIX:-$HOME/.local}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/share/codex-web-bridge/connector}"
@@ -17,7 +17,7 @@ verify its SHA-256 checksum, install codex-connector to DIR/bin, and keep the
 unpacked connector package available for --skill-root.
 
 Environment:
-  REPO          GitHub repository, default tt-a1i/codex-web-bridge.
+  REPO          GitHub repository, default tt-a1i/proxide.
   VERSION       Release tag or latest, default latest.
   PREFIX        Binary install prefix, default ~/.local.
   INSTALL_DIR   Directory for unpacked package files, default

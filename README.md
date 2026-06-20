@@ -1,12 +1,115 @@
-# Codex Web Bridge
+# Proxide
 
-`codex-web-bridge` 是一个 Codex Skill，用来把 Codex 的当前任务上下文发送给网页端强模型，再把回复带回 Codex 或交给人继续判断。
+<p align="center">
+  <a href="https://github.com/tt-a1i/proxide/releases"><img alt="Release" src="https://img.shields.io/github/v/release/tt-a1i/proxide?style=flat-square"></a>
+  <a href="https://github.com/tt-a1i/proxide/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/tt-a1i/proxide/ci.yml?branch=main&style=flat-square"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/tt-a1i/proxide?style=flat-square"></a>
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-ChatGPT%20Pro%20ready-0f766e?style=flat-square">
+  <img alt="Runtime" src="https://img.shields.io/badge/runtime-Rust-000000?style=flat-square">
+</p>
 
-它的默认边界很窄：**只做通信，不替人和目标模型做判断**。
+<p align="center">
+  <strong>Any-agent GPT Pro workspace bridge</strong><br>
+  让任意 Agent 通过 MCP 或浏览器 fallback 安全使用网页端 GPT Pro，并把它接到本地仓库。
+</p>
+
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#为什么值得用">为什么值得用</a> ·
+  <a href="#两种模式">两种模式</a> ·
+  <a href="#首次接入-chatgpt-pro">ChatGPT Pro 接入</a> ·
+  <a href="#同类项目对比与路线">同类项目对比</a>
+</p>
+
+**Proxide** 是一个 agent-agnostic workspace bridge。它不要求 Agent 必须是 Codex：只要 Agent 能运行本地命令、调用 MCP、或通过浏览器/手动粘贴转交上下文，就可以用 Proxide 把本地项目安全交给 ChatGPT Pro、Claude、Grok、Gemini 等网页端强模型。
+
+它的目标不是做一个只读 demo，也不是简单封装浏览器自动化，而是让不同能力层级的 Agent 都能稳定使用网页端强模型：
+
+- **任意 MCP-capable Agent**：启动 Rust connector，让 ChatGPT Pro 或其他 MCP host 读取项目、写 review/edit plan，必要时进入受控执行；
+- **任意 browser-capable Agent**：走 Bridge Mode，把 scrub 后的 context packet 发给 ChatGPT Pro、Claude、Grok、Gemini 等网页模型；
+- **没有浏览器能力的 Agent**：仍可运行本地 MCP server，把 `/mcp` endpoint 交给网页端 GPT Pro 使用；
+- **第一次使用的人**：按 README、FAQ 和 ChatGPT Pro setup runbook 完成安装、诊断、OAuth owner approval 和 smoke test。
+
+它的默认边界仍然很窄：**先做通信和受控 handoff，不替人和目标模型做最终判断**。
 
 新手配置和安全边界可以先看 [FAQ_ZH.md](FAQ_ZH.md) 和 [SECURITY.md](SECURITY.md)。
 
-它负责：
+## 一眼看懂
+
+| 使用者状态 | 推荐路径 | 能得到什么 |
+| --- | --- | --- |
+| Agent 支持 MCP 或能启动本地服务 | MCP Connector Mode | ChatGPT Pro 直接通过 MCP 读取项目、写 review/edit plan、必要时受控执行 |
+| Agent 只会操作浏览器 | Bridge Mode | scrub 后的 context packet、网页强模型回复、本地 outbox/inbox 交接记录 |
+| Agent 不能操作浏览器 | Local MCP endpoint handoff | 把 `/mcp` endpoint 交给网页端 GPT Pro，不需要本地 Agent 控浏览器 |
+| 第一次接入 ChatGPT Pro | Release installer + `doctor` + setup runbook | 可复制的安装、诊断、OAuth 授权和 smoke test 流程 |
+| 团队担心安全边界 | readonly/review/execute + tool/write/shell modes | 从只读、handoff 到 scoped execution 的渐进式授权 |
+
+```mermaid
+flowchart LR
+  A["Any Agent or User"] --> B{"Can expose local MCP?"}
+  B -- "yes" --> C["Rust MCP Connector"]
+  C --> D["ChatGPT Pro / MCP host"]
+  D --> E["read / search / review / handoff / execute"]
+  B -- "no" --> F["Bridge Mode"]
+  F --> G["scrubbed context packet"]
+  G --> D
+  E --> H["local audit + session state"]
+```
+
+## 快速开始
+
+安装 release 版 connector：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tt-a1i/proxide/main/scripts/install-release.sh | bash
+```
+
+初始化一个要开放给 ChatGPT Pro 的 workspace：
+
+```bash
+codex-connector init \
+  --root /absolute/path/to/project \
+  --skill-root "$HOME/.local/share/codex-web-bridge/connector"/codex-web-bridge-connector-*/skills \
+  --trust-level readonly \
+  --force
+codex-connector doctor
+codex-connector serve
+```
+
+把本地 `http://127.0.0.1:8765` 通过可信 HTTPS tunnel 暴露后，在 ChatGPT Pro developer connector 里填写：
+
+```text
+https://<tunnel-host>/mcp
+```
+
+完整步骤见 [首次接入 ChatGPT Pro](#首次接入-chatgpt-pro) 和 [chatgpt-pro-mcp-setup.md](skills/codex-web-bridge/references/chatgpt-pro-mcp-setup.md)。
+
+## 为什么值得用
+
+Proxide 吸收了两个相邻方向的优点：[Waishnav/devspace](https://github.com/Waishnav/devspace) 证明了 ChatGPT-local-workspace MCP 对 Agent 编码有价值；[rebel0789/codexpro](https://github.com/rebel0789/codexpro) 强调了首次 setup、doctor、tool mode、handoff/fallback 文档和新手体验。Proxide 在这些基础上做了更适合任意 Agent 的组合：
+
+- **Rust production MCP server**：生产方向落在 `connector-rs/`，不是临时 Python demo；支持标准 MCP lifecycle、HTTP `/mcp`、session id、OAuth owner approval、owner token 调试和 release 安装。
+- **Bridge + Connector 双模式**：有 MCP 的 Agent 走 connector；没有 MCP 或不能连本地服务时，仍可用 browser/manual bridge 把 scrub 后的上下文交给网页强模型。
+- **面向 Agent 的工具面预设**：`tool_mode=minimal|standard|full` 控制工具数量，`write_mode=off|handoff|workspace` 控制是否写源码，`shell_mode=off|safe|full` 控制 shell 暴露范围。弱 Agent 不需要看到完整工具集，强 Agent 可以逐步升级。
+- **先 handoff，后执行**：`review` / `handoff` 模式允许 ChatGPT 写 review note、edit plan 和 patch preview，但不改 workspace；本地 Codex、Claude Code 或任意其他 Agent 可以接手执行。
+- **项目规则和 skills 是一等上下文**：`open_workspace` 会返回 `AGENTS.md`、`CLAUDE.md`、`CONTEXT.md`、嵌套 instruction 文件和显式授权的 skill entrypoints；读取 skill 资源前必须先读对应 `SKILL.md`。
+- **编码闭环不是只读查看**：显式 `execute` 后可用 scoped `write` / `edit` / `apply_patch` / `move_path`、safe/full shell、managed Git worktrees、branch publish、PR handoff 和 PR status refresh。
+- **ChatGPT Apps UI + 普通 MCP fallback**：支持 `render_changes`、`render_review`、`render_pull_requests`、`render_edit_plans` 等 Apps-compatible cards，同时保留 plain-text/structuredContent 给非 ChatGPT MCP host。
+- **更保守的安全默认值**：默认 readonly、allowed roots、canonical path containment、Origin/Content-Type 防护、OAuth scopes、常量时间 token 比对、审计摘要不保存文件正文或 shell 输出。
+- **面向发布的安装和验证**：支持 GitHub Release tarball、SHA-256 校验、`install-release.sh`、`doctor`、`verify-release.sh` 和 ChatGPT Pro 首次接入 runbook。
+
+## 能力矩阵
+
+| 层级 | 代表能力 | 是否改 workspace | 适合场景 |
+| --- | --- | --- | --- |
+| Bridge Mode | context packet、scrub、browser/manual handoff、response capture | 否 | 借用网页强模型做规划、审查、解释 |
+| `readonly` connector | `open_workspace`、`read`、`search`、`list`、`git_status`、`git_diff`、`preview_patch` | 否 | 第一次接入、只读审查、低风险远程上下文 |
+| `review` / `handoff` | `create_note`、`create_edit_plan`、`update_edit_plan_status`、`render_review`、`render_edit_plans` | 不改源码 | GPT Pro 写计划，本地 Agent 执行 |
+| `execute` connector | `write`、`edit`、`apply_patch`、`move_path`、safe/full `shell`、worktree、publish、PR handoff | 是，受 allowed roots 和 mode 约束 | 授权后的真实编码闭环 |
+
+## 功能边界
+
+Bridge Mode 负责：
 
 - 从当前 repo、diff、未跟踪文件、指定证据文件和用户问题生成 context packet；
 - 外发前扫描常见 secret、token、private key、内部 URL 等风险；
@@ -14,9 +117,9 @@
 - 让用户选择普通 Chrome/浏览器、Codex 应用侧边栏浏览器或手动粘贴；
 - 通过浏览器把 packet 发给 ChatGPT Pro、Claude、Grok、Gemini 等网页模型；
 - 等待模型生成完成并抓取完整回复；
-- 把回复交回 Codex 或用户。
+- 把回复交回本地 Agent 或用户。
 
-它不负责：
+Bridge Mode 不负责：
 
 - 判断模型回答对不对；
 - 强制本地 reconciliation；
@@ -24,21 +127,29 @@
 - 让网页模型直接改本地代码或运行本地命令；
 - 未经确认发布社交评论、上传文件或执行外部副作用。
 
+MCP Connector Mode 负责：
+
+- 暴露用户授权 workspace 的 MCP 工具面；
+- 发现项目 instruction、skills、Git 状态和 bounded 文件内容；
+- 在 `review` / `handoff` 模式下保存 review note、edit plan 和 patch preview；
+- 在显式 `execute` + 合适 mode 下执行 scoped 文件修改、受控 shell、worktree 和 PR handoff；
+- 给 ChatGPT Apps 和普通 MCP host 返回结构化结果、compact `_meta` 和本地 audit/session state。
+
 ## 两种模式
 
 ### Bridge Mode
 
-这是当前已实现的默认模式：Codex 打包上下文，scrub 之后通过普通 Chrome/浏览器、Codex 应用侧边栏浏览器或手动粘贴发送给 ChatGPT Pro、Claude、Grok、Gemini 等网页模型，再把回复带回 Codex。
+这是当前已实现的 browser/manual fallback：本地 Agent 打包上下文，scrub 之后通过普通 Chrome/浏览器、Codex 应用侧边栏浏览器或手动粘贴发送给 ChatGPT Pro、Claude、Grok、Gemini 等网页模型，再把回复带回本地 Agent。
 
 适合：
 
-- 本地 Codex 支持浏览器操作；
+- 本地 Agent 支持浏览器操作；
 - 用户只想借用网页强模型做规划、审查、解释；
 - 不希望网页模型直接读写本地文件或运行命令。
 
 ### MCP Connector Mode
 
-这是新增的设计方向：像 DevSpace 那样启动一个本地 MCP connector，让 ChatGPT Pro、Claude 或其他 MCP host 连接到用户允许的本地 workspace。这样即使本地 agent 不支持浏览器操作，也可以让网页端 GPT Pro 使用本地项目上下文。
+这是当前生产方向：启动一个本地 Rust MCP connector，让 ChatGPT Pro、Claude 或其他 MCP host 连接到用户允许的本地 workspace。这样即使本地 agent 不支持浏览器操作，也可以让网页端 GPT Pro 使用本地项目上下文。
 
 这个模式和 Bridge Mode 的信任边界完全不同：Connector Mode 是网页模型主动调用本地工具。默认只读，只开放 workspace、项目指令发现、嵌套指令文件索引、skill 入口发现、受控 skill 资源读取、read、search、list、git status/diff、patch preview、session 审计、review note / edit plan 恢复、managed worktree 列表等能力；`write` / `edit` / `apply_patch` / `move_path` / `shell` / `open_worktree` / `open_workspace(mode="worktree")` / PR 发布与状态刷新只在显式 `trust_level=execute` 时出现。
 
@@ -97,33 +208,40 @@ MCP host 通过 `POST /mcp` 发送 JSON-RPC 2.0 消息。ChatGPT 这类网页端
 
 注意：只安装 `skills/codex-web-bridge` 这个 Codex Skill，不等于安装了 MCP server。MCP server 生产方向在仓库根目录的 `connector-rs/` crate 里，并通过 `./bin/codex-connector` 暴露稳定入口；其他 agent 如果不识别 Codex Skill，也仍然可以直接启动 Rust connector 作为通用 MCP server。
 
-## DevSpace 追平路线
+## 同类项目对比与路线
 
-我们比 [Waishnav/devspace](https://github.com/Waishnav/devspace) 更晚进入这个方向，所以短期目标不是只做一个 readonly connector，而是先补齐 agent 真实编码所需的能力，再保留 Bridge Mode / scrub / handoff 这些差异化优势。当前追平计划见 [docs/devspace-parity-roadmap.md](docs/devspace-parity-roadmap.md)。
+我们比 [Waishnav/devspace](https://github.com/Waishnav/devspace) 和 [rebel0789/codexpro](https://github.com/rebel0789/codexpro) 更晚进入这个方向，所以路线不是只做一个 readonly connector，而是先吸收它们对 Agent 真正有用的部分，再用更严格的信任边界和双模式 fallback 做差异化。
+
+| 参考方向 | 值得学习的能力 | 这里已经吸收的部分 | 这里额外强调的差异 |
+| --- | --- | --- | --- |
+| DevSpace | ChatGPT 连接本地 workspace、工具卡片、worktree / PR 编码流 | `open_workspace`、readonly/review/execute 分层、Apps-compatible cards、managed worktree、publish branch、PR handoff/status refresh | Rust connector、OAuth owner approval、Bridge Mode fallback、scrub gate、handoff-first 安全流、skill/instruction 发现 |
+| codexpro | 新手 setup、doctor、tool mode、handoff、fallback 文档和发布包装 | `codex-connector init`、`doctor`、`tool_mode` / `write_mode` / `shell_mode`、ChatGPT setup runbook、release installer | 不把 query-token URL 当正式认证路径；生产方向用 Rust MCP server；skill roots 显式授权；audit/state 默认不保存文件正文、patch 正文或 shell 输出 |
+
+当前追平计划见 [docs/devspace-parity-roadmap.md](docs/devspace-parity-roadmap.md)。剩余重点主要是产品成熟度：更丰富的 ChatGPT Apps 交互、registry/tap/npm wrapper 安装入口、持续 PR review 看板和更完整的跨平台运行验证。
 
 ## 安装
 
-从 GitHub 安装：
+任意 Agent / MCP host 优先安装通用 connector：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tt-a1i/proxide/main/scripts/install-release.sh | bash
+```
+
+这个脚本会下载对应平台的 release tarball、校验 SHA-256、把 `codex-connector` 安装到 `~/.local/bin`，并保留解压包里的 `skills/` 目录用于 `codex-connector init --skill-root ...`。Release workflow 为 Linux x86_64 和 macOS arm64 上传 tarball 与 checksum；发布步骤见 [docs/release.md](docs/release.md)。macOS Intel 和源码 checkout 用户仍可用：
+
+```bash
+./scripts/install-connector.sh
+```
+
+如果你使用 Codex，并且只需要 browser/manual Bridge Mode，可以单独安装可选 Codex Skill：
 
 ```text
-Use $skill-installer to install https://github.com/tt-a1i/codex-web-bridge/tree/main/skills/codex-web-bridge
+Use $skill-installer to install https://github.com/tt-a1i/proxide/tree/main/skills/codex-web-bridge
 ```
 
 安装后重启 Codex。
 
 如果需要 MCP Connector Mode，不要只安装 skill 子目录；请 clone 或安装包含 `skills/codex-web-bridge/`、`connector-rs/`、`bin/codex-connector` 的完整项目分发。已只安装 skill 的用户需要升级到完整 checkout，否则只能使用 Bridge Mode，不能启动本地 MCP server。
-
-GitHub Release 发布后，用户可以直接安装 connector：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tt-a1i/codex-web-bridge/main/scripts/install-release.sh | bash
-```
-
-这个脚本会下载对应平台的 release tarball、校验 SHA-256、把 `codex-connector` 安装到 `~/.local/bin`，并保留解压包里的 `skills/` 目录用于 `codex-connector init --skill-root ...`。Release workflow 会为 Linux x86_64 和 macOS arm64 上传 tarball 与 checksum；发布步骤见 [docs/release.md](docs/release.md)。macOS Intel 和源码 checkout 用户仍可用：
-
-```bash
-./scripts/install-connector.sh
-```
 
 本地开发时，也可以在仓库根目录用相对路径安装：
 
@@ -132,6 +250,18 @@ Use $skill-installer to install ./skills/codex-web-bridge
 ```
 
 ## 使用
+
+任意 Agent / MCP host 的最短路径：
+
+```bash
+codex-connector init --root /absolute/path/to/project --trust-level readonly --force
+codex-connector doctor
+codex-connector serve
+```
+
+然后把 HTTPS tunnel 暴露的 `/mcp` endpoint 交给 ChatGPT Pro、Claude 或其他 MCP host。
+
+Codex Skill 的 browser/manual bridge 用法：
 
 把当前任务发给 ChatGPT Pro：
 
@@ -163,7 +293,7 @@ Use $codex-web-bridge to send this failing test and implementation context to Cl
 6. 通过浏览器打开或复用对应网页模型线程。
 7. 发送 scrub 通过后的 packet。
 8. 等待模型完整回复。
-9. 抓取回复，用 `bridge_handoff.py done` 写回 inbox，或直接交回 Codex / 用户。
+9. 抓取回复，用 `bridge_handoff.py done` 写回 inbox，或直接交回本地 Agent / 用户。
 
 如果选择 Codex 应用侧边栏浏览器，第一次访问对应网页模型时可能需要用户在侧边栏里登录认证一次；它和用户日常 Chrome 登录态不一定共享。
 
@@ -325,6 +455,6 @@ connector-rs/
 
 ## 关系与授权
 
-这个项目最初受 [christianaranda/codex-pro-skill](https://github.com/christianaranda/codex-pro-skill) 和 [steipete/oracle](https://github.com/steipete/oracle) 这类“把本地上下文交给强模型”的工作流启发，但定位更窄：只做 Codex 到网页端模型的通信桥。
+Proxide 最初受 [christianaranda/codex-pro-skill](https://github.com/christianaranda/codex-pro-skill) 和 [steipete/oracle](https://github.com/steipete/oracle) 这类“把本地上下文交给强模型”的工作流启发，但现在定位更通用：为任意 Agent 提供连接网页端强模型和本地 workspace 的 MCP / browser bridge。
 
 代码以 MIT License 发布。

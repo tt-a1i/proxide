@@ -1,6 +1,6 @@
 # Release Runbook
 
-This project publishes the Rust MCP connector as GitHub Release assets. The
+Proxide publishes the Rust MCP connector as GitHub Release assets. The optional
 Codex skill remains installable from the repository path, while Connector Mode
 users can install the release package without a source checkout.
 
@@ -39,7 +39,7 @@ After the workflow completes, install from the published release:
 tmp_prefix="$(mktemp -d)"
 tmp_package="$(mktemp -d)"
 ./scripts/install-release.sh \
-  --repo tt-a1i/codex-web-bridge \
+  --repo tt-a1i/proxide \
   --version v0.1.0 \
   --prefix "$tmp_prefix" \
   --install-dir "$tmp_package"
@@ -49,7 +49,7 @@ tmp_package="$(mktemp -d)"
 For latest-release verification:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tt-a1i/codex-web-bridge/main/scripts/install-release.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tt-a1i/proxide/main/scripts/install-release.sh | bash
 ```
 
 ## MCP Smoke Test
