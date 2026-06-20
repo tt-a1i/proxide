@@ -104,9 +104,10 @@ jobs:
           package_tar="$(find dist -maxdepth 1 -name 'codex-web-bridge-connector-*.tar.gz' -print -quit)"
           test -n "$package_tar"
           test -f "$package_tar.sha256"
-          tar -tzf "$package_tar" | grep -q '/bin/codex-connector$'
-          tar -tzf "$package_tar" | grep -q '/skills/codex-web-bridge/SKILL.md$'
-          tar -tzf "$package_tar" | grep -q '/docs/release.md$'
+          tar -tzf "$package_tar" > dist/package-listing.txt
+          grep -q '/bin/codex-connector$' dist/package-listing.txt
+          grep -q '/skills/codex-web-bridge/SKILL.md$' dist/package-listing.txt
+          grep -q '/docs/release.md$' dist/package-listing.txt
           if command -v sha256sum >/dev/null 2>&1; then
             (cd dist && sha256sum -c "$(basename "$package_tar").sha256")
           else

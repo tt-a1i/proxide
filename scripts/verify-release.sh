@@ -56,38 +56,38 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
   (cd "$tmp_package" && shasum -a 256 -c "$(basename "$package_tar").sha256" >/dev/null)
 fi
-tar -tzf "$package_tar" | grep -q '/bin/codex-connector$'
-tar -tzf "$package_tar" | grep -q '/skills/codex-web-bridge/SKILL.md$'
-tar -tzf "$package_tar" | grep -q '/skills/codex-web-bridge/agents/openai.yaml$'
-tar -tzf "$package_tar" | grep -q '/skills/codex-web-bridge/references/chatgpt-pro-mcp-setup.md$'
-tar -tzf "$package_tar" | grep -q '/skills/codex-web-bridge/references/mcp-connector-mode.md$'
-tar -tzf "$package_tar" | grep -q '/skills/codex-web-bridge/references/providers.md$'
-tar -tzf "$package_tar" | grep -q '/skills/codex-web-bridge/references/response-capture.md$'
-tar -tzf "$package_tar" | grep -q '/skills/codex-web-bridge/scripts/bridge_handoff.py$'
-tar -tzf "$package_tar" | grep -q '/skills/codex-web-bridge/scripts/build_context_packet.py$'
-tar -tzf "$package_tar" | grep -q '/skills/codex-web-bridge/scripts/scrub_context.py$'
-tar -tzf "$package_tar" | grep -q '/connector-rs/Cargo.toml$'
-tar -tzf "$package_tar" | grep -q '/connector-rs/README.md$'
-tar -tzf "$package_tar" | grep -q '/connector-rs/connector.example.json$'
-tar -tzf "$package_tar" | grep -q '/connector-rs/src/main.rs$'
-tar -tzf "$package_tar" | grep -q '/connector/config.py$'
-tar -tzf "$package_tar" | grep -q '/connector/protocol.py$'
-tar -tzf "$package_tar" | grep -q '/connector/server.py$'
-tar -tzf "$package_tar" | grep -q '/connector/tools.py$'
-tar -tzf "$package_tar" | grep -q '/connector/workspace.py$'
-tar -tzf "$package_tar" | grep -q '/connector/tests/test_connector.py$'
-tar -tzf "$package_tar" | grep -q '/connector/tests/test_protocol.py$'
-tar -tzf "$package_tar" | grep -q '/connector/tests/test_server.py$'
-tar -tzf "$package_tar" | grep -q '/scripts/install-connector.sh$'
-tar -tzf "$package_tar" | grep -q '/scripts/install-release.sh$'
-tar -tzf "$package_tar" | grep -q '/scripts/package-connector.sh$'
-tar -tzf "$package_tar" | grep -q '/docs/devspace-parity-roadmap.md$'
-tar -tzf "$package_tar" | grep -q '/docs/release.md$'
-tar -tzf "$package_tar" | grep -q '/PACKAGE-MANIFEST.json$'
-tar -tzf "$package_tar" | grep -q '/SECURITY.md$'
-tar -tzf "$package_tar" | grep -q '/FAQ_ZH.md$'
 package_listing="$tmp_package/package-listing.txt"
 tar -tzf "$package_tar" > "$package_listing"
+grep -q '/bin/codex-connector$' "$package_listing"
+grep -q '/skills/codex-web-bridge/SKILL.md$' "$package_listing"
+grep -q '/skills/codex-web-bridge/agents/openai.yaml$' "$package_listing"
+grep -q '/skills/codex-web-bridge/references/chatgpt-pro-mcp-setup.md$' "$package_listing"
+grep -q '/skills/codex-web-bridge/references/mcp-connector-mode.md$' "$package_listing"
+grep -q '/skills/codex-web-bridge/references/providers.md$' "$package_listing"
+grep -q '/skills/codex-web-bridge/references/response-capture.md$' "$package_listing"
+grep -q '/skills/codex-web-bridge/scripts/bridge_handoff.py$' "$package_listing"
+grep -q '/skills/codex-web-bridge/scripts/build_context_packet.py$' "$package_listing"
+grep -q '/skills/codex-web-bridge/scripts/scrub_context.py$' "$package_listing"
+grep -q '/connector-rs/Cargo.toml$' "$package_listing"
+grep -q '/connector-rs/README.md$' "$package_listing"
+grep -q '/connector-rs/connector.example.json$' "$package_listing"
+grep -q '/connector-rs/src/main.rs$' "$package_listing"
+grep -q '/connector/config.py$' "$package_listing"
+grep -q '/connector/protocol.py$' "$package_listing"
+grep -q '/connector/server.py$' "$package_listing"
+grep -q '/connector/tools.py$' "$package_listing"
+grep -q '/connector/workspace.py$' "$package_listing"
+grep -q '/connector/tests/test_connector.py$' "$package_listing"
+grep -q '/connector/tests/test_protocol.py$' "$package_listing"
+grep -q '/connector/tests/test_server.py$' "$package_listing"
+grep -q '/scripts/install-connector.sh$' "$package_listing"
+grep -q '/scripts/install-release.sh$' "$package_listing"
+grep -q '/scripts/package-connector.sh$' "$package_listing"
+grep -q '/docs/devspace-parity-roadmap.md$' "$package_listing"
+grep -q '/docs/release.md$' "$package_listing"
+grep -q '/PACKAGE-MANIFEST.json$' "$package_listing"
+grep -q '/SECURITY.md$' "$package_listing"
+grep -q '/FAQ_ZH.md$' "$package_listing"
 if grep -E '(^|/)(\.git|target|\.codex|\.codex-web-bridge|__pycache__|review-notes\.jsonl|workspace_state\.json|audit\.jsonl|pr-bodies)(/|$)|(^|/)\.env(\..*)?$|\.pem$|\.key$|\.p12$|\.pfx$|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|(^|/)secrets\.[^/]+$|(^|/)credentials\.[^/]+$|\.pyc$|\.local\.json$|connector\.local\.json$|oauth_tokens\.json$|oauth_owner\.local\.json$' "$package_listing"; then
   echo "package contains forbidden local/build/state paths" >&2
   exit 1
