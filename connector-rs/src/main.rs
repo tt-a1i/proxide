@@ -2005,7 +2005,7 @@ async fn handle_rpc(State(state): State<AppState>, headers: HeaderMap, body: Byt
     }
     let params = obj.get("params").cloned().unwrap_or_else(|| json!({}));
     if method == "tools/call" {
-        if let Some(required_scope) = tool_call_name(&params).and_then(required_tool_scope) {
+        if let Some(required_scope) = required_tool_scope_for_call(&params) {
             if !authorized_for_scope(&state, &headers, required_scope) {
                 return json_rpc_response(
                     StatusCode::OK,
@@ -2131,6 +2131,22 @@ fn required_tool_scope(tool: &str) -> Option<&'static str> {
         "shell" => Some("shell"),
         _ => None,
     }
+}
+
+fn required_tool_scope_for_call(params: &Value) -> Option<&'static str> {
+    let name = tool_call_name(params)?;
+    if name == "open_workspace" {
+        let mode = params
+            .get("arguments")
+            .and_then(Value::as_object)
+            .and_then(|args| args.get("mode"))
+            .and_then(Value::as_str)
+            .unwrap_or("checkout");
+        if mode == "worktree" {
+            return Some("workspace:write");
+        }
+    }
+    required_tool_scope(name)
 }
 
 fn tool_call_name(params: &Value) -> Option<&str> {
@@ -2586,18 +2602,26 @@ fn record_workspace_from_tool_result(
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or("workspace");
+            let mode = payload
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("checkout");
             record_workspace_opened(
                 state,
                 session_id,
                 WorkspaceOpenRecord {
                     workspace_id,
                     name,
-                    kind: "workspace",
-                    source_workspace_id: None,
-                    branch: None,
-                    base_ref: None,
-                    task_id: None,
-                    task: None,
+                    kind: if mode == "worktree" {
+                        "worktree"
+                    } else {
+                        "workspace"
+                    },
+                    source_workspace_id: payload.get("source_workspace_id").and_then(Value::as_str),
+                    branch: payload.get("branch").and_then(Value::as_str),
+                    base_ref: payload.get("base_ref").and_then(Value::as_str),
+                    task_id: payload.get("task_id").and_then(Value::as_str),
+                    task: payload.get("task").and_then(Value::as_str),
                 },
             );
         }
@@ -3688,7 +3712,7 @@ fn call_tool(
             let Some(path) = args.get("path").and_then(Value::as_str) else {
                 return ToolOutcome::ProtocolError("missing required argument: path".to_string());
             };
-            open_workspace(state, path)
+            open_workspace_tool(state, args, path)
         }
         "read" => read_file_tool(state, args),
         "list" => list_tool(state, args),
@@ -3847,6 +3871,64 @@ fn show_session_tool(
     Ok(session_detail(&events, session_id))
 }
 
+fn open_workspace_tool(
+    state: &AppState,
+    args: &serde_json::Map<String, Value>,
+    path: &str,
+) -> Result<Value> {
+    let mode = args
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("checkout");
+    match mode {
+        "checkout" => open_workspace(state, path),
+        "worktree" => {
+            if state.config.trust_level != TrustLevel::Execute {
+                bail!("open_workspace mode=worktree requires trust_level=execute");
+            }
+            let source = open_workspace(state, path)?;
+            let source_workspace_id = source
+                .get("workspace_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("opened workspace did not return a workspace_id"))?;
+            let mut worktree_args = serde_json::Map::new();
+            worktree_args.insert(
+                "workspace_id".to_string(),
+                json!(source_workspace_id.to_string()),
+            );
+            for key in ["base_ref", "branch", "task_id", "task"] {
+                if let Some(value) = args.get(key) {
+                    worktree_args.insert(key.to_string(), value.clone());
+                }
+            }
+            let worktree = open_worktree_tool(state, &worktree_args)?;
+            let workspace_id = worktree
+                .get("workspace_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("opened worktree did not return a workspace_id"))?;
+            let ws = workspace(state, workspace_id)?;
+            let instructions = workspace_instructions(&ws.root)?;
+            let (skills, skills_truncated) = skill_summaries(&state.config, Some(&ws.root))?;
+            Ok(json!({
+                "workspace_id": workspace_id,
+                "name": worktree.get("name").cloned().unwrap_or_else(|| json!("worktree")),
+                "mode": "worktree",
+                "source_workspace_id": source_workspace_id,
+                "branch": worktree.get("branch").cloned().unwrap_or(Value::Null),
+                "base_ref": worktree.get("base_ref").cloned().unwrap_or(Value::Null),
+                "task_id": worktree.get("task_id").cloned().unwrap_or(Value::Null),
+                "task": worktree.get("task").cloned().unwrap_or(Value::Null),
+                "instructions": instructions.loaded,
+                "available_instructions": instructions.available,
+                "available_instructions_truncated": instructions.truncated,
+                "skills": skills,
+                "skills_truncated": skills_truncated
+            }))
+        }
+        other => bail!("mode must be checkout or worktree; got {other}"),
+    }
+}
+
 fn open_workspace(state: &AppState, path: &str) -> Result<Value> {
     let resolved = expand_home(Path::new(path))
         .canonicalize()
@@ -3869,6 +3951,7 @@ fn open_workspace(state: &AppState, path: &str) -> Result<Value> {
     Ok(json!({
         "workspace_id": id,
         "name": name,
+        "mode": "checkout",
         "instructions": instructions.loaded,
         "available_instructions": instructions.available,
         "available_instructions_truncated": instructions.truncated,
@@ -6660,7 +6743,7 @@ fn tool_result_meta(tool: &str, payload: &Value, is_error: bool) -> Value {
 fn tool_definitions(trust_level: TrustLevel) -> Vec<Value> {
     tool_names(trust_level)
         .into_iter()
-        .filter_map(tool_definition)
+        .filter_map(|name| tool_definition(name, trust_level))
         .collect()
 }
 
@@ -6710,16 +6793,29 @@ fn tool_names(trust_level: TrustLevel) -> Vec<&'static str> {
     tools
 }
 
-fn tool_definition(name: &str) -> Option<Value> {
+fn tool_definition(name: &str, trust_level: TrustLevel) -> Option<Value> {
     Some(match name {
-        "open_workspace" =>
-        tool_def(
+        "open_workspace" => {
+        let input_schema = json!({"type":"object","properties":{"path":{"type":"string","description":"Absolute path inside an allowed root."},"mode":{"type":"string","enum":["checkout","worktree"],"description":"Defaults to checkout. Use worktree for an isolated managed Git worktree; requires trust_level=execute and OAuth workspace:write."},"base_ref":{"type":"string","description":"Git commit-ish base ref for mode=worktree (default HEAD)."},"branch":{"type":"string","description":"Optional branch name for mode=worktree. Defaults to a codex/worktree-* branch."},"task_id":{"type":"string","description":"Optional external task or issue id for mode=worktree."},"task":{"type":"string","description":"Optional short task description for mode=worktree."}},"required":["path"]});
+        let output_schema = json!({"type":"object","properties":{"workspace_id":{"type":"string"},"name":{"type":"string"},"mode":{"type":"string","enum":["checkout","worktree"]},"source_workspace_id":{"type":["string","null"]},"branch":{"type":["string","null"]},"base_ref":{"type":["string","null"]},"task_id":{"type":["string","null"]},"task":{"type":["string","null"]},"instructions":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"truncated":{"type":"boolean"}},"required":["path","content","truncated"],"additionalProperties":false}},"available_instructions":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},"available_instructions_truncated":{"type":"boolean"},"skills":{"type":"array","items":{"type":"object","properties":{"skill_id":{"type":"string"},"name":{"type":"string"},"description":{"type":"string"},"path":{"type":"string"},"entrypoint":{"type":"string"}},"required":["skill_id","name","description","path","entrypoint"],"additionalProperties":false}},"skills_truncated":{"type":"boolean"}},"required":["workspace_id","name","mode","instructions","available_instructions","available_instructions_truncated","skills","skills_truncated"],"additionalProperties":false});
+        if trust_level == TrustLevel::Execute {
+            mutating_tool_def(
+                "open_workspace",
+                "Open Workspace",
+                "Open a path inside an allowed root and return a workspace id, root project instructions, nested instruction file paths, and configured or workspace-local skill entrypoints. Defaults to mode=checkout. mode=worktree creates a managed Git worktree for isolated or parallel coding and returns the worktree workspace id.",
+                input_schema,
+                output_schema,
+            )
+        } else {
+            tool_def(
             "open_workspace",
             "Open Workspace",
-            "Open a path inside an allowed root and return a workspace id, root project instructions, nested instruction file paths, and configured or workspace-local skill entrypoints.",
-            json!({"type":"object","properties":{"path":{"type":"string","description":"Absolute path inside an allowed root."}},"required":["path"]}),
-            json!({"type":"object","properties":{"workspace_id":{"type":"string"},"name":{"type":"string"},"instructions":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"truncated":{"type":"boolean"}},"required":["path","content","truncated"],"additionalProperties":false}},"available_instructions":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},"available_instructions_truncated":{"type":"boolean"},"skills":{"type":"array","items":{"type":"object","properties":{"skill_id":{"type":"string"},"name":{"type":"string"},"description":{"type":"string"},"path":{"type":"string"},"entrypoint":{"type":"string"}},"required":["skill_id","name","description","path","entrypoint"],"additionalProperties":false}},"skills_truncated":{"type":"boolean"}},"required":["workspace_id","name","instructions","available_instructions","available_instructions_truncated","skills","skills_truncated"],"additionalProperties":false}),
-        ),
+            "Open a path inside an allowed root and return a workspace id, root project instructions, nested instruction file paths, and configured or workspace-local skill entrypoints. Defaults to mode=checkout. mode=worktree is rejected unless the connector is running with trust_level=execute.",
+                input_schema,
+                output_schema,
+            )
+        }
+        },
         "read" =>
         tool_def(
             "read",
@@ -7777,6 +7873,12 @@ mod tests {
         assert!(names.contains("create_note"));
         assert!(names.contains("create_edit_plan"));
         assert!(names.contains("update_edit_plan_status"));
+        let open_workspace = tools
+            .iter()
+            .find(|tool| tool["name"] == "open_workspace")
+            .unwrap();
+        assert_eq!(open_workspace["annotations"]["readOnlyHint"], false);
+        assert_eq!(open_workspace["annotations"]["destructiveHint"], true);
         let write = tools.iter().find(|tool| tool["name"] == "write").unwrap();
         assert_eq!(write["annotations"]["readOnlyHint"], false);
         assert_eq!(write["annotations"]["destructiveHint"], true);
@@ -7832,6 +7934,18 @@ mod tests {
         ] {
             assert_eq!(required_tool_scope(tool), Some("workspace:write"), "{tool}");
         }
+        assert_eq!(
+            required_tool_scope_for_call(
+                &json!({"name":"open_workspace","arguments":{"path":"/repo","mode":"worktree"}})
+            ),
+            Some("workspace:write")
+        );
+        assert_eq!(
+            required_tool_scope_for_call(
+                &json!({"name":"open_workspace","arguments":{"path":"/repo","mode":"checkout"}})
+            ),
+            None
+        );
         assert_eq!(required_tool_scope("shell"), Some("shell"));
     }
 
@@ -9888,6 +10002,95 @@ esac
     }
 
     #[test]
+    fn open_workspace_worktree_mode_creates_managed_workspace_in_execute_mode() {
+        let root = temp_project();
+        let state_dir = temp_project();
+        init_git_repo(&root);
+        let mut raw = raw_config(root.clone());
+        raw.trust_level = TrustLevel::Execute;
+        raw.state_dir = Some(state_dir.clone());
+        let config = validate_raw(raw).unwrap();
+        let state = build_state(config).unwrap();
+
+        let opened = handle_tools_call(
+            &state,
+            Some(json!(1)),
+            json!({"name":"open_workspace","arguments":{
+                "path": root,
+                "mode": "worktree",
+                "branch": "codex/open-workspace-worktree",
+                "task_id": "TASK-77",
+                "task": "Open through workspace mode"
+            }}),
+            Some("sid_worktree_mode"),
+        );
+        assert_eq!(opened["result"]["isError"], false);
+        let payload = &opened["result"]["structuredContent"];
+        let worktree_workspace_id = payload["workspace_id"].as_str().unwrap();
+        assert_eq!(payload["mode"], "worktree");
+        assert_eq!(payload["branch"], "codex/open-workspace-worktree");
+        assert_eq!(payload["task_id"], "TASK-77");
+        assert!(payload["source_workspace_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("ws_"));
+
+        let read = read_file_tool(
+            &state,
+            &serde_json::Map::from_iter([
+                ("workspace_id".to_string(), json!(worktree_workspace_id)),
+                ("path".to_string(), json!("README.md")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(read["content"], "# Test\n");
+        let persisted: Value = serde_json::from_str(
+            &fs::read_to_string(state_dir.join("workspace_state.json")).unwrap(),
+        )
+        .unwrap();
+        let workspaces = persisted["sessions"][0]["workspaces"].as_array().unwrap();
+        let persisted_worktree = workspaces
+            .iter()
+            .find(|workspace| workspace["workspace_id"] == worktree_workspace_id)
+            .unwrap();
+        assert_eq!(persisted_worktree["kind"], "worktree");
+        assert_eq!(persisted_worktree["task_id"], "TASK-77");
+
+        for worktree in managed_worktrees(&state_dir).unwrap() {
+            remove_managed_worktree(&worktree).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(state_dir).unwrap();
+    }
+
+    #[test]
+    fn open_workspace_worktree_mode_requires_execute_trust() {
+        let root = temp_project();
+        let state_dir = temp_project();
+        init_git_repo(&root);
+        let mut raw = raw_config(root.clone());
+        raw.state_dir = Some(state_dir.clone());
+        let config = validate_raw(raw).unwrap();
+        let state = build_state(config).unwrap();
+
+        let opened = handle_tools_call(
+            &state,
+            Some(json!(1)),
+            json!({"name":"open_workspace","arguments":{"path":root,"mode":"worktree"}}),
+            Some("sid_readonly_worktree_mode"),
+        );
+        assert_eq!(opened["result"]["isError"], true);
+        assert!(opened["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("requires trust_level=execute"));
+        assert!(managed_worktrees(&state_dir).unwrap().is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(state_dir).unwrap();
+    }
+
+    #[test]
     fn list_worktrees_returns_managed_worktree_workspace_ids() {
         let root = temp_project();
         let state_dir = temp_project();
@@ -10937,6 +11140,24 @@ esac
                 .unwrap()
                 .contains(required_scope));
         }
+        let body = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"open_workspace","arguments":{"path":root,"mode":"worktree"}}})
+            .to_string();
+        let response = raw_http(
+            addr,
+            format!(
+                "POST /mcp HTTP/1.1\r\nHost: bridge.example\r\nContent-Type: application/json\r\nAuthorization: Bearer read-only-token\r\nMcp-Session-Id: {session_id}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            ),
+        )
+        .await;
+        let response_json: Value = serde_json::from_str(http_body(&response)).unwrap();
+        assert_eq!(response_json["error"]["code"], -32003);
+        assert!(response_json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("workspace:write"));
+        assert!(managed_worktrees(&state_dir).unwrap().is_empty());
 
         server.abort();
         fs::remove_dir_all(root).unwrap();

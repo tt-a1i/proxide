@@ -67,7 +67,10 @@ Implemented here:
 - Managed worktree foundation: explicit `trust_level=execute` exposes
   `open_worktree`, creating Git worktrees under connector state and returning
   a new workspace id; readonly `list_worktrees` lists managed worktrees and
-  returns fresh workspace ids for available worktrees.
+  returns fresh workspace ids for available worktrees. `open_workspace` also
+  accepts `mode="worktree"` in execute trust, matching the lower-friction
+  Agent entrypoint used by DevSpace while keeping `open_worktree` available for
+  explicit flows.
 - PR lifecycle refresh foundation: explicit `trust_level=execute` exposes
   `refresh_pull_request_status` and `refresh_pull_requests`, which use
   `gh pr view` to refresh one or multiple persisted PR handoff summaries with
@@ -89,15 +92,16 @@ Still missing versus DevSpace:
   plans, file moves, unified-diff patching, review handoff widgets, and edit
   plan history cards, such as interactive approval controls.
 - Richer managed Git worktree workflows beyond create/list/cleanup/publish/task
-  metadata/PR handoff records and on-demand PR status refresh, such as
-  continuous PR review polling and richer PR lifecycle widgets.
+  metadata/PR handoff records, `open_workspace(mode="worktree")`, and
+  on-demand PR status refresh, such as continuous PR review polling and richer
+  PR lifecycle widgets.
 - Richer workspace state persistence beyond bounded session snapshots, audit
   logs, recoverable review notes/edit plans, worktree metadata, and PR handoff
   summaries.
 - Richer ChatGPT Apps widget interactions beyond the current change-summary,
   review-handoff, pull-request handoff, and edit-plan history cards.
 - Published registry/tap install path beyond the generated source-checkout
-  release package.
+  release package and GitHub Release download installer.
 
 ## Parity Phases
 
@@ -203,6 +207,10 @@ Deliverables:
 
 - `open_worktree` tool with `workspace_id`, `base_ref`, and optional branch
   name. Status: implemented.
+- `open_workspace(mode="worktree")` shortcut for agents that expect a single
+  workspace-opening tool to create isolated worktrees. Status: implemented for
+  execute trust; it reuses managed worktree creation and returns the worktree
+  workspace id directly.
 - Worktree root under connector state, not inside the active checkout. Status:
   implemented under `state_dir/worktrees`.
 - `doctor` checks Git availability and basic worktree support. Status:
@@ -309,7 +317,8 @@ Deliverables:
   `./bin/codex-connector`; source-checkout binary install implemented as
   `scripts/install-connector.sh`; distributable source-checkout release package
   implemented as `scripts/package-connector.sh` with binary, skill, connector
-  source/docs, helper scripts, manifest, and SHA-256 checksum. Published
+  source/docs, helper scripts, manifest, and SHA-256 checksum; GitHub Release
+  download/install path implemented as `scripts/install-release.sh`. Published
   registry/tap remains future work.
 - CLI alias or package entrypoint beyond `cargo run --manifest-path connector-rs/Cargo.toml --`.
   Status: implemented as `bin/codex-connector`.

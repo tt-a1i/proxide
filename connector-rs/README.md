@@ -83,6 +83,17 @@ another prefix. The binary install does not include the skill files; keep the
 full connector checkout or unpacked release package available when configuring
 `--skill-root`.
 
+After GitHub Release assets are published, install without a source checkout:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tt-a1i/codex-web-bridge/main/scripts/install-release.sh | bash
+```
+
+That script downloads the matching release tarball, verifies the SHA-256 file,
+installs `codex-connector` to `~/.local/bin`, and keeps the unpacked package
+under `~/.local/share/codex-web-bridge/connector` so the bundled `skills/`
+directory can be passed to `codex-connector init --skill-root`.
+
 Build a distributable package from a full checkout:
 
 ```bash
@@ -274,6 +285,14 @@ plus:
 - `create_pull_request`
 - `refresh_pull_request_status`
 - `refresh_pull_requests`
+
+`open_workspace` accepts `mode: "checkout" | "worktree"`. The default
+`checkout` mode opens the real allowed directory. In execute trust,
+`mode: "worktree"` creates a managed Git worktree from the requested path and
+returns the worktree's workspace id directly; optional `base_ref`, `branch`,
+`task_id`, and `task` arguments mirror `open_worktree`. This keeps the common
+agent flow on one entrypoint while the explicit `open_worktree` tool remains
+available for hosts that prefer a separate create-worktree step.
 
 `apply_patch` accepts bounded unified diffs for existing, added, and deleted
 UTF-8 files under the workspace. Added files must target an existing

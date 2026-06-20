@@ -32,12 +32,15 @@ tmp_install="$(mktemp -d "${TMPDIR:-/tmp}/codex-connector-install.XXXXXX")"
 tmp_package=""
 tmp_unpack=""
 tmp_package_project=""
+tmp_release_install=""
+tmp_release_package=""
 cleanup() {
-  rm -rf "$tmp_install" "${tmp_package:-}" "${tmp_unpack:-}" "${tmp_package_project:-}"
+  rm -rf "$tmp_install" "${tmp_package:-}" "${tmp_unpack:-}" "${tmp_package_project:-}" "${tmp_release_install:-}" "${tmp_release_package:-}"
 }
 trap cleanup EXIT
 ./scripts/install-connector.sh --prefix "$tmp_install" >/dev/null
 "$tmp_install/bin/codex-connector" --help >/dev/null
+./scripts/install-release.sh --help >/dev/null
 
 echo "[verify] connector package"
 tmp_package="$(mktemp -d "${TMPDIR:-/tmp}/codex-connector-package.XXXXXX")"
@@ -45,6 +48,9 @@ tmp_package="$(mktemp -d "${TMPDIR:-/tmp}/codex-connector-package.XXXXXX")"
 package_tar="$(find "$tmp_package" -maxdepth 1 -name 'codex-web-bridge-connector-*.tar.gz' -print -quit)"
 test -n "$package_tar"
 test -f "$package_tar.sha256"
+package_file="$(basename "$package_tar")"
+package_version="${package_file#codex-web-bridge-connector-}"
+package_version="${package_version%%-*}"
 if command -v sha256sum >/dev/null 2>&1; then
   (cd "$tmp_package" && sha256sum -c "$(basename "$package_tar").sha256" >/dev/null)
 else
@@ -73,6 +79,7 @@ tar -tzf "$package_tar" | grep -q '/connector/tests/test_connector.py$'
 tar -tzf "$package_tar" | grep -q '/connector/tests/test_protocol.py$'
 tar -tzf "$package_tar" | grep -q '/connector/tests/test_server.py$'
 tar -tzf "$package_tar" | grep -q '/scripts/install-connector.sh$'
+tar -tzf "$package_tar" | grep -q '/scripts/install-release.sh$'
 tar -tzf "$package_tar" | grep -q '/scripts/package-connector.sh$'
 tar -tzf "$package_tar" | grep -q '/docs/devspace-parity-roadmap.md$'
 tar -tzf "$package_tar" | grep -q '/PACKAGE-MANIFEST.json$'
@@ -87,6 +94,17 @@ tar -xzf "$package_tar" -C "$tmp_unpack"
 package_root="$(find "$tmp_unpack" -mindepth 1 -maxdepth 1 -type d -name 'codex-web-bridge-connector-*' -print -quit)"
 test -n "$package_root"
 "$package_root/bin/codex-connector" --help >/dev/null
+tmp_release_install="$(mktemp -d "${TMPDIR:-/tmp}/codex-connector-release-bin.XXXXXX")"
+tmp_release_package="$(mktemp -d "${TMPDIR:-/tmp}/codex-connector-release-package.XXXXXX")"
+./scripts/install-release.sh \
+  --version "$package_version" \
+  --base-url "file://$tmp_package" \
+  --prefix "$tmp_release_install" \
+  --install-dir "$tmp_release_package" >/dev/null
+"$tmp_release_install/bin/codex-connector" --help >/dev/null
+release_package_root="$(find "$tmp_release_package" -mindepth 1 -maxdepth 1 -type d -name 'codex-web-bridge-connector-*' -print -quit)"
+test -n "$release_package_root"
+test -f "$release_package_root/skills/codex-web-bridge/SKILL.md"
 python3 -m unittest discover -s "$package_root/connector/tests" -t "$package_root"
 tmp_package_project="$(mktemp -d "${TMPDIR:-/tmp}/codex-connector-package-project.XXXXXX")"
 "$package_root/bin/codex-connector" \
