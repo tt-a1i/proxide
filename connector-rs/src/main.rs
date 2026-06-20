@@ -56,6 +56,7 @@ const MAX_WORKTREES: usize = 128;
 const MAX_PERSISTED_SESSIONS: usize = 256;
 const MAX_PERSISTED_PULL_REQUESTS: usize = 256;
 const MAX_PERSISTED_EDIT_PLANS: usize = 256;
+const MAX_CHANGE_CHECKPOINTS: usize = 300;
 const MAX_PULL_REQUEST_REFRESHES: usize = 5;
 const MAX_REVIEW_NOTES: usize = 1000;
 const MAX_SESSION_TOOL_CALLS: usize = 200;
@@ -336,6 +337,8 @@ struct PersistedState {
     pull_requests: Vec<PersistedPullRequest>,
     #[serde(default)]
     edit_plans: Vec<PersistedEditPlan>,
+    #[serde(default)]
+    change_checkpoints: Vec<PersistedChangeCheckpoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -366,6 +369,24 @@ struct PersistedWorkspace {
     task_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     task: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedChangeCheckpoint {
+    workspace_id: String,
+    created_unix_ms: u128,
+    updated_unix_ms: u128,
+    #[serde(default)]
+    workspace_open_unix_ms: u128,
+    #[serde(default)]
+    last_shown_unix_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChangeSince {
+    LastShown,
+    WorkspaceOpen,
+    WorkingTree,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2227,7 +2248,7 @@ fn changes_widget_html() -> &'static str {
     .header { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 10px; }
     h1 { font-size: 15px; margin: 0; font-weight: 650; }
     .muted { color: color-mix(in srgb, CanvasText 62%, transparent); }
-    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
     .metric { border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 8px; padding: 8px; min-width: 0; }
     .label { color: color-mix(in srgb, CanvasText 58%, transparent); font-size: 11px; margin-bottom: 4px; }
     .value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
@@ -2244,8 +2265,10 @@ fn changes_widget_html() -> &'static str {
   <div class="grid">
     <div class="metric"><div class="label">Branch</div><div class="value" id="branch">-</div></div>
     <div class="metric"><div class="label">HEAD</div><div class="value" id="head">-</div></div>
+    <div class="metric"><div class="label">Since</div><div class="value" id="since">-</div></div>
     <div class="metric"><div class="label">Truncated</div><div class="value" id="truncated">-</div></div>
   </div>
+  <div class="muted" id="checkpoint" style="margin-bottom: 10px;"></div>
   <pre id="status">No status.</pre>
   <pre id="stat">No diff stat.</pre>
   <ul id="actions"></ul>
@@ -2255,7 +2278,14 @@ fn changes_widget_html() -> &'static str {
     document.getElementById("workspace").textContent = text(data.workspace_id, "");
     document.getElementById("branch").textContent = text(data.branch);
     document.getElementById("head").textContent = text(data.head);
+    document.getElementById("since").textContent = text(data.since);
     document.getElementById("truncated").textContent = data.truncated ? "yes" : "no";
+    const checkpoint = data.checkpoint || {};
+    document.getElementById("checkpoint").textContent = checkpoint.fallback
+      ? `Action checkpoint fallback: ${text(checkpoint.error, "unavailable")}; diff: ${text(data.diff_basis)}`
+      : checkpoint.available
+        ? `Action checkpoint ${checkpoint.advanced ? "advanced" : "preserved"}; diff: ${text(data.diff_basis)}`
+        : `Diff: ${text(data.diff_basis, "working_tree")}`;
     document.getElementById("status").textContent = text(data.status, "Clean working tree.");
     document.getElementById("stat").textContent = text(data.stat, "No diff stat.");
     const actions = Array.isArray(data.recent_actions) ? data.recent_actions : [];
@@ -2922,10 +2952,14 @@ fn record_persisted_tool_call(
             .get("workspace_id")
             .and_then(Value::as_str)
             .map(|value| truncate_string(value, 120)),
-        path: arguments
-            .get("path")
-            .and_then(Value::as_str)
-            .map(|value| truncate_string(value, 240)),
+        path: if name == "open_workspace" {
+            None
+        } else {
+            arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .map(|value| truncate_string(value, 240))
+        },
         from_path: arguments
             .get("from_path")
             .and_then(Value::as_str)
@@ -3026,6 +3060,21 @@ fn cap_persisted_state(snapshot: &mut PersistedState) {
         .sort_by_key(|edit_plan| edit_plan.created_unix_ms);
     while snapshot.edit_plans.len() > MAX_PERSISTED_EDIT_PLANS {
         snapshot.edit_plans.remove(0);
+    }
+    snapshot
+        .change_checkpoints
+        .sort_by_key(|checkpoint| checkpoint.updated_unix_ms);
+    for checkpoint in &mut snapshot.change_checkpoints {
+        if checkpoint.workspace_open_unix_ms == 0 {
+            checkpoint.workspace_open_unix_ms = checkpoint.created_unix_ms;
+        }
+        if checkpoint.last_shown_unix_ms == 0 {
+            checkpoint.last_shown_unix_ms =
+                checkpoint.updated_unix_ms.max(checkpoint.created_unix_ms);
+        }
+    }
+    while snapshot.change_checkpoints.len() > MAX_CHANGE_CHECKPOINTS {
+        snapshot.change_checkpoints.remove(0);
     }
 }
 
@@ -3268,10 +3317,73 @@ where
     Ok(plan)
 }
 
+fn initialize_change_checkpoint(state: &AppState, workspace_id: &str) {
+    if state.config.state_dir.is_none() {
+        return;
+    }
+    let now = unix_ms();
+    let checkpoint = PersistedChangeCheckpoint {
+        workspace_id: workspace_id.to_string(),
+        created_unix_ms: now,
+        updated_unix_ms: now,
+        workspace_open_unix_ms: now,
+        last_shown_unix_ms: now,
+    };
+    update_persisted_state(state, |snapshot| {
+        snapshot
+            .change_checkpoints
+            .retain(|candidate| candidate.workspace_id != workspace_id);
+        snapshot.change_checkpoints.push(checkpoint);
+    });
+}
+
+fn change_checkpoint(state: &AppState, workspace_id: &str) -> Result<PersistedChangeCheckpoint> {
+    let Some(persisted) = &state.persisted_state else {
+        bail!("change checkpoints require state_dir");
+    };
+    let guard = persisted.lock().unwrap();
+    guard
+        .change_checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.workspace_id == workspace_id)
+        .cloned()
+        .ok_or_else(|| anyhow!("change checkpoint not found for workspace"))
+}
+
+fn mark_change_checkpoint_shown(
+    state: &AppState,
+    workspace_id: &str,
+) -> Result<PersistedChangeCheckpoint> {
+    let Some(persisted) = &state.persisted_state else {
+        bail!("change checkpoints require state_dir");
+    };
+    let Some(state_dir) = &state.config.state_dir else {
+        bail!("change checkpoints require state_dir");
+    };
+    let mut guard = persisted.lock().unwrap();
+    let mut snapshot = guard.clone();
+    let Some(checkpoint) = snapshot
+        .change_checkpoints
+        .iter_mut()
+        .find(|checkpoint| checkpoint.workspace_id == workspace_id)
+    else {
+        bail!("change checkpoint not found for workspace");
+    };
+    let now = unix_ms();
+    checkpoint.updated_unix_ms = now;
+    checkpoint.last_shown_unix_ms = now;
+    let checkpoint = checkpoint.clone();
+    cap_persisted_state(&mut snapshot);
+    persist_state_snapshot(state_dir, &snapshot)?;
+    *guard = snapshot;
+    Ok(checkpoint)
+}
+
 fn recent_change_actions(
     state: &AppState,
     session_id: &str,
     workspace_id: &str,
+    since_unix_ms: Option<u128>,
 ) -> Result<Vec<Value>> {
     let Some(state_dir) = &state.config.state_dir else {
         return Ok(vec![]);
@@ -3301,6 +3413,14 @@ fn recent_change_actions(
                         | "refresh_pull_requests"
                 )
             ) && call.get("workspace_id").and_then(Value::as_str) == Some(workspace_id)
+                && since_unix_ms
+                    .map(|since| {
+                        call.get("ts_unix_ms")
+                            .and_then(Value::as_u64)
+                            .map(|ts| u128::from(ts) >= since)
+                            .unwrap_or(true)
+                    })
+                    .unwrap_or(true)
         })
         .take(MAX_RECENT_CHANGE_ACTIONS)
         .cloned()
@@ -3376,15 +3496,21 @@ fn summarize_result(tool: &str, payload: &Value) -> Value {
             "status_chars": payload.get("status").and_then(Value::as_str).map(str::len).unwrap_or(0)
         }),
         "git_diff" | "show_changes" => json!({
+            "since": payload.get("since"),
+            "diff_basis": payload.get("diff_basis"),
             "stat_chars": payload.get("stat").and_then(Value::as_str).map(str::len).unwrap_or(0),
             "diff_chars": payload.get("diff").and_then(Value::as_str).map(str::len).unwrap_or(0),
             "truncated": payload.get("truncated"),
+            "checkpoint": payload.get("checkpoint"),
             "recent_actions": payload.get("recent_actions").and_then(Value::as_array).map(Vec::len).unwrap_or(0)
         }),
         "render_changes" => json!({
+            "since": payload.get("since"),
+            "diff_basis": payload.get("diff_basis"),
             "stat_chars": payload.get("stat").and_then(Value::as_str).map(str::len).unwrap_or(0),
             "diff_chars": payload.get("diff").and_then(Value::as_str).map(str::len).unwrap_or(0),
             "truncated": payload.get("truncated"),
+            "checkpoint": payload.get("checkpoint"),
             "recent_actions": payload.get("recent_actions").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
             "resource_uri": CHANGES_WIDGET_URI
         }),
@@ -3411,11 +3537,22 @@ fn summarize_result(tool: &str, payload: &Value) -> Value {
             "truncated": payload.get("truncated"),
             "resource_uri": if tool == "render_pull_requests" { Value::String(PULL_REQUESTS_WIDGET_URI.to_string()) } else { Value::Null }
         }),
-        "write" | "edit" | "apply_patch" | "preview_patch" => json!({
+        "write" => json!({
             "path": payload.get("path"),
+            "bytes": payload.get("bytes"),
+            "diff_chars": payload.get("diff").and_then(Value::as_str).map(str::len).unwrap_or(0),
+            "truncated": payload.get("truncated")
+        }),
+        "edit" => json!({
+            "path": payload.get("path"),
+            "replacements": payload.get("replacements"),
+            "diff_chars": payload.get("diff").and_then(Value::as_str).map(str::len).unwrap_or(0),
+            "truncated": payload.get("truncated")
+        }),
+        "preview_patch" | "apply_patch" => json!({
+            "would_apply": payload.get("would_apply"),
+            "applied": payload.get("applied"),
             "files": payload.get("files").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
-            "bytes_before": payload.get("bytes_before"),
-            "bytes_after": payload.get("bytes_after"),
             "plan_id": payload.get("plan_id"),
             "plan_status": payload.get("plan_status"),
             "diff_chars": payload.get("diff").and_then(Value::as_str).map(str::len).unwrap_or(0),
@@ -3689,7 +3826,6 @@ fn call_tool(
         Err(err) => ToolOutcome::ToolError(err.to_string()),
     }
 }
-
 fn show_session_tool(
     state: &AppState,
     args: &serde_json::Map<String, Value>,
@@ -3727,6 +3863,7 @@ fn open_workspace(state: &AppState, path: &str) -> Result<Value> {
         bail!("path is not inside any allowed root");
     }
     let (id, name, workspace) = register_workspace_root(state, resolved);
+    initialize_change_checkpoint(state, &id);
     let instructions = workspace_instructions(&workspace.root)?;
     let (skills, skills_truncated) = skill_summaries(&state.config, Some(&workspace.root))?;
     Ok(json!({
@@ -3890,11 +4027,29 @@ fn git_status_tool(state: &AppState, args: &serde_json::Map<String, Value>) -> R
 
 fn git_diff_tool(state: &AppState, args: &serde_json::Map<String, Value>) -> Result<Value> {
     let ws = workspace(state, required(args, "workspace_id")?)?;
-    let stat = git(&ws.root, &["diff", "--stat"])?;
-    let raw_diff = git_limited(&ws.root, &["diff"], MAX_READ_BYTES + 1)?;
-    let truncated = raw_diff.len() > MAX_READ_BYTES;
-    let diff = truncate_bytes(&raw_diff);
+    let (stat, diff, truncated) = working_tree_diff(&ws.root)?;
     Ok(json!({"stat": stat, "diff": diff, "truncated": truncated}))
+}
+
+fn change_since_arg(args: &serde_json::Map<String, Value>) -> Result<ChangeSince> {
+    match args
+        .get("since")
+        .and_then(Value::as_str)
+        .unwrap_or("last_shown")
+    {
+        "last_shown" => Ok(ChangeSince::LastShown),
+        "workspace_open" => Ok(ChangeSince::WorkspaceOpen),
+        "working_tree" => Ok(ChangeSince::WorkingTree),
+        other => bail!("since must be last_shown, workspace_open, or working_tree; got {other}"),
+    }
+}
+
+fn change_since_name(since: ChangeSince) -> &'static str {
+    match since {
+        ChangeSince::LastShown => "last_shown",
+        ChangeSince::WorkspaceOpen => "workspace_open",
+        ChangeSince::WorkingTree => "working_tree",
+    }
 }
 
 fn show_changes_tool(
@@ -3904,6 +4059,12 @@ fn show_changes_tool(
 ) -> Result<Value> {
     let workspace_id = required(args, "workspace_id")?;
     let ws = workspace(state, workspace_id)?;
+    let since = change_since_arg(args)?;
+    let requested_mark_shown = args
+        .get("mark_shown")
+        .and_then(Value::as_bool)
+        .unwrap_or(!matches!(since, ChangeSince::WorkingTree));
+    let mark_shown = requested_mark_shown && !matches!(since, ChangeSince::WorkingTree);
     let branch = git(&ws.root, &["rev-parse", "--abbrev-ref", "HEAD"])?
         .trim()
         .to_string();
@@ -3911,23 +4072,90 @@ fn show_changes_tool(
         .trim()
         .to_string();
     let status = git(&ws.root, &["status", "--short"])?;
-    let stat = git(&ws.root, &["diff", "--stat"])?;
-    let raw_diff = git_limited(&ws.root, &["diff"], MAX_READ_BYTES + 1)?;
-    let truncated = raw_diff.len() > MAX_READ_BYTES;
-    let diff = truncate_bytes(&raw_diff);
+    let (stat, diff, truncated) = working_tree_diff(&ws.root)?;
+    let (since_unix_ms, checkpoint) = checkpoint_window(state, workspace_id, since, mark_shown);
     let recent_actions = current_session_id
-        .and_then(|session_id| recent_change_actions(state, session_id, workspace_id).ok())
+        .and_then(|session_id| {
+            recent_change_actions(state, session_id, workspace_id, since_unix_ms).ok()
+        })
         .unwrap_or_default();
     Ok(json!({
         "workspace_id": workspace_id,
+        "since": change_since_name(since),
+        "mark_shown": mark_shown,
+        "diff_basis": "working_tree",
         "branch": branch,
         "head": head,
         "status": status,
         "stat": stat,
         "diff": diff,
         "truncated": truncated,
+        "checkpoint": checkpoint,
         "recent_actions": recent_actions
     }))
+}
+
+fn checkpoint_window(
+    state: &AppState,
+    workspace_id: &str,
+    since: ChangeSince,
+    mark_shown: bool,
+) -> (Option<u128>, Value) {
+    if matches!(since, ChangeSince::WorkingTree) {
+        return (
+            None,
+            json!({
+                "available": false,
+                "fallback": false,
+                "advanced": false,
+                "since_unix_ms": Value::Null,
+                "error": Value::Null
+            }),
+        );
+    }
+    match checkpoint_window_inner(state, workspace_id, since, mark_shown) {
+        Ok((since_unix_ms, advanced)) => (
+            Some(since_unix_ms),
+            json!({
+                "available": true,
+                "fallback": false,
+                "advanced": advanced,
+                "since_unix_ms": since_unix_ms,
+                "error": Value::Null
+            }),
+        ),
+        Err(error) => (
+            None,
+            json!({
+                "available": false,
+                "fallback": true,
+                "advanced": false,
+                "since_unix_ms": Value::Null,
+                "error": truncate_string(&error.to_string(), 300)
+            }),
+        ),
+    }
+}
+
+fn checkpoint_window_inner(
+    state: &AppState,
+    workspace_id: &str,
+    since: ChangeSince,
+    mark_shown: bool,
+) -> Result<(u128, bool)> {
+    let checkpoint = change_checkpoint(state, workspace_id)?;
+    let since_unix_ms = match since {
+        ChangeSince::LastShown => checkpoint.last_shown_unix_ms,
+        ChangeSince::WorkspaceOpen => checkpoint.workspace_open_unix_ms,
+        ChangeSince::WorkingTree => unreachable!("working_tree does not use checkpoints"),
+    };
+    let advanced = if mark_shown {
+        let _ = mark_change_checkpoint_shown(state, workspace_id)?;
+        true
+    } else {
+        false
+    };
+    Ok((since_unix_ms, advanced))
 }
 
 fn create_note_tool(
@@ -5970,14 +6198,27 @@ fn git(root: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn git_limited(root: &Path, args: &[&str], limit: usize) -> Result<String> {
-    let mut child = Command::new("git")
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    git_dynamic_limited(root, &args, limit, &[])
+}
+
+fn git_dynamic_limited(
+    root: &Path,
+    args: &[String],
+    limit: usize,
+    extra_env: &[(&str, String)],
+) -> Result<String> {
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| "git is not installed")?;
+        .stderr(Stdio::null());
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().with_context(|| "git is not installed")?;
     let Some(stdout) = child.stdout.take() else {
         bail!("git stdout unavailable");
     };
@@ -6015,6 +6256,13 @@ fn git_limited(root: &Path, args: &[&str], limit: usize) -> Result<String> {
         bail!("git command failed");
     }
     Ok(String::from_utf8_lossy(&stdout).to_string())
+}
+
+fn working_tree_diff(root: &Path) -> Result<(String, String, bool)> {
+    let stat = git(root, &["diff", "--stat"])?;
+    let raw_diff = git_limited(root, &["diff"], MAX_READ_BYTES + 1)?;
+    let truncated = raw_diff.len() > MAX_READ_BYTES;
+    Ok((stat, truncate_bytes(&raw_diff), truncated))
 }
 
 fn git_available() -> bool {
@@ -6532,17 +6780,17 @@ fn tool_definition(name: &str) -> Option<Value> {
         tool_def(
             "show_changes",
             "Show Changes",
-            "Summarize current Git changes and recent change-oriented tool actions for a workspace.",
-            json!({"type":"object","properties":{"workspace_id":{"type":"string"}},"required":["workspace_id"]}),
-            json!({"type":"object","properties":{"workspace_id":{"type":"string"},"branch":{"type":"string"},"head":{"type":"string"},"status":{"type":"string"},"stat":{"type":"string"},"diff":{"type":"string"},"truncated":{"type":"boolean"},"recent_actions":{"type":"array","items":{"type":"object"}}},"required":["workspace_id","branch","head","status","stat","diff","truncated","recent_actions"],"additionalProperties":false}),
+            "Summarize current Git working tree changes and recent change-oriented tool actions for a workspace. The since checkpoint is content-free and scopes recent_actions only; stat and diff are always the current working tree diff.",
+            json!({"type":"object","properties":{"workspace_id":{"type":"string"},"since":{"type":"string","enum":["last_shown","workspace_open","working_tree"],"description":"Defaults to last_shown. last_shown returns recent actions since the previous show_changes/render_changes checkpoint; workspace_open returns recent actions since open_workspace; working_tree skips checkpoint filtering."},"mark_shown":{"type":"boolean","description":"Defaults to true except for since=working_tree. When true, advances the content-free last_shown checkpoint after producing the summary."}},"required":["workspace_id"]}),
+            json!({"type":"object","properties":{"workspace_id":{"type":"string"},"since":{"type":"string"},"mark_shown":{"type":"boolean"},"diff_basis":{"type":"string"},"branch":{"type":"string"},"head":{"type":"string"},"status":{"type":"string"},"stat":{"type":"string"},"diff":{"type":"string"},"truncated":{"type":"boolean"},"checkpoint":{"type":"object","properties":{"available":{"type":"boolean"},"fallback":{"type":"boolean"},"advanced":{"type":"boolean"},"since_unix_ms":{},"error":{}},"required":["available","fallback","advanced","since_unix_ms","error"],"additionalProperties":false},"recent_actions":{"type":"array","items":{"type":"object"}}},"required":["workspace_id","since","mark_shown","diff_basis","branch","head","status","stat","diff","truncated","checkpoint","recent_actions"],"additionalProperties":false}),
         ),
         "render_changes" =>
         apps_widget_tool_def(
             "render_changes",
             "Render Changes",
-            "Render current Git changes and recent change-oriented tool actions using the bundled Apps widget.",
-            json!({"type":"object","properties":{"workspace_id":{"type":"string"}},"required":["workspace_id"]}),
-            json!({"type":"object","properties":{"workspace_id":{"type":"string"},"branch":{"type":"string"},"head":{"type":"string"},"status":{"type":"string"},"stat":{"type":"string"},"diff":{"type":"string"},"truncated":{"type":"boolean"},"recent_actions":{"type":"array","items":{"type":"object"}}},"required":["workspace_id","branch","head","status","stat","diff","truncated","recent_actions"],"additionalProperties":false}),
+            "Render current Git working tree changes and checkpoint-scoped recent actions using the bundled Apps widget.",
+            json!({"type":"object","properties":{"workspace_id":{"type":"string"},"since":{"type":"string","enum":["last_shown","workspace_open","working_tree"],"description":"Defaults to last_shown. last_shown returns recent actions since the previous show_changes/render_changes checkpoint; workspace_open returns recent actions since open_workspace; working_tree skips checkpoint filtering."},"mark_shown":{"type":"boolean","description":"Defaults to true except for since=working_tree. When true, advances the content-free last_shown checkpoint after producing the summary."}},"required":["workspace_id"]}),
+            json!({"type":"object","properties":{"workspace_id":{"type":"string"},"since":{"type":"string"},"mark_shown":{"type":"boolean"},"diff_basis":{"type":"string"},"branch":{"type":"string"},"head":{"type":"string"},"status":{"type":"string"},"stat":{"type":"string"},"diff":{"type":"string"},"truncated":{"type":"boolean"},"checkpoint":{"type":"object","properties":{"available":{"type":"boolean"},"fallback":{"type":"boolean"},"advanced":{"type":"boolean"},"since_unix_ms":{},"error":{}},"required":["available","fallback","advanced","since_unix_ms","error"],"additionalProperties":false},"recent_actions":{"type":"array","items":{"type":"object"}}},"required":["workspace_id","since","mark_shown","diff_basis","branch","head","status","stat","diff","truncated","checkpoint","recent_actions"],"additionalProperties":false}),
         ),
         "show_review" =>
         tool_def(
@@ -9000,6 +9248,32 @@ mod tests {
     }
 
     #[test]
+    fn persisted_change_checkpoint_defaults_keep_older_state_loadable() {
+        let state_dir = temp_project();
+        fs::write(
+            state_dir.join("workspace_state.json"),
+            r#"{
+  "sessions": [],
+  "pull_requests": [],
+  "edit_plans": [],
+  "change_checkpoints": [{
+    "workspace_id": "workspace-old",
+    "created_unix_ms": 10,
+    "updated_unix_ms": 20,
+    "open_ref": "refs/old/open",
+    "shown_ref": "refs/old/shown"
+  }]
+}"#,
+        )
+        .unwrap();
+        let state = load_persisted_state(&state_dir).unwrap();
+        assert_eq!(state.change_checkpoints.len(), 1);
+        assert_eq!(state.change_checkpoints[0].workspace_open_unix_ms, 10);
+        assert_eq!(state.change_checkpoints[0].last_shown_unix_ms, 20);
+        fs::remove_dir_all(state_dir).unwrap();
+    }
+
+    #[test]
     fn refresh_pull_request_status_updates_persisted_handoff_record() {
         let root = temp_project();
         let state_dir = temp_project();
@@ -9753,6 +10027,12 @@ esac
         let payload = &changes["result"]["structuredContent"];
         assert_eq!(changes["result"]["isError"], false);
         assert_eq!(payload["workspace_id"], workspace_id);
+        assert_eq!(payload["since"], "last_shown");
+        assert_eq!(payload["mark_shown"], true);
+        assert_eq!(payload["diff_basis"], "working_tree");
+        assert_eq!(payload["checkpoint"]["available"], true);
+        assert_eq!(payload["checkpoint"]["fallback"], false);
+        assert_eq!(payload["checkpoint"]["advanced"], true);
         assert!(payload["status"].as_str().unwrap().contains("README"));
         assert!(payload["stat"].as_str().unwrap().contains("README"));
         assert_eq!(payload["recent_actions"].as_array().unwrap().len(), 2);
@@ -9772,6 +10052,25 @@ esac
             workspace_id
         );
         assert_eq!(
+            rendered["result"]["structuredContent"]["since"],
+            "last_shown"
+        );
+        assert_eq!(
+            rendered["result"]["structuredContent"]["diff_basis"],
+            "working_tree"
+        );
+        assert!(rendered["result"]["structuredContent"]["stat"]
+            .as_str()
+            .unwrap()
+            .contains("README"));
+        assert_eq!(
+            rendered["result"]["structuredContent"]["recent_actions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
             rendered["result"]["_meta"]["openai/outputTemplate"],
             CHANGES_WIDGET_URI
         );
@@ -9781,8 +10080,181 @@ esac
         );
         let raw_state = fs::read_to_string(state_dir.join("workspace_state.json")).unwrap();
         assert!(!raw_state.contains("# Changed"));
+        assert!(!raw_state.contains(&root.to_string_lossy().to_string()));
+        assert!(raw_state.contains("change_checkpoints"));
+        let refs = Command::new("git")
+            .args(["for-each-ref", "refs/codex-web-bridge/changes"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(refs.status.success());
+        assert_eq!(String::from_utf8_lossy(&refs.stdout), "");
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(state_dir).unwrap();
+    }
+
+    #[test]
+    fn show_changes_supports_workspace_open_and_preserved_checkpoints() {
+        let root = temp_project();
+        let state_dir = temp_project();
+        init_git_repo(&root);
+        let mut raw = raw_config(root.clone());
+        raw.trust_level = TrustLevel::Execute;
+        raw.state_dir = Some(state_dir.clone());
+        let config = validate_raw(raw).unwrap();
+        let state = build_state(config).unwrap();
+        record_session_initialized(&state, "sid_checkpoint");
+
+        let opened = handle_tools_call(
+            &state,
+            Some(json!(1)),
+            json!({"name":"open_workspace","arguments":{"path":root}}),
+            Some("sid_checkpoint"),
+        );
+        let workspace_id = opened["result"]["structuredContent"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let _ = handle_tools_call(
+            &state,
+            Some(json!(2)),
+            json!({"name":"write","arguments":{"workspace_id":workspace_id,"path":"README.md","content":"# First\n"}}),
+            Some("sid_checkpoint"),
+        );
+        let preserved = handle_tools_call(
+            &state,
+            Some(json!(3)),
+            json!({"name":"show_changes","arguments":{"workspace_id":workspace_id,"mark_shown":false}}),
+            Some("sid_checkpoint"),
+        );
+        let preserved_payload = &preserved["result"]["structuredContent"];
+        assert_eq!(preserved_payload["checkpoint"]["advanced"], false);
+        assert!(preserved_payload["diff"]
+            .as_str()
+            .unwrap()
+            .contains("# First"));
+
+        let still_visible = handle_tools_call(
+            &state,
+            Some(json!(4)),
+            json!({"name":"show_changes","arguments":{"workspace_id":workspace_id}}),
+            Some("sid_checkpoint"),
+        );
+        assert!(still_visible["result"]["structuredContent"]["diff"]
+            .as_str()
+            .unwrap()
+            .contains("# First"));
+        assert_eq!(
+            still_visible["result"]["structuredContent"]["checkpoint"]["advanced"],
+            true
+        );
+
+        let after_marked = handle_tools_call(
+            &state,
+            Some(json!(5)),
+            json!({"name":"show_changes","arguments":{"workspace_id":workspace_id}}),
+            Some("sid_checkpoint"),
+        );
+        assert!(after_marked["result"]["structuredContent"]["stat"]
+            .as_str()
+            .unwrap()
+            .contains("README"));
+        assert_eq!(
+            after_marked["result"]["structuredContent"]["recent_actions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+
+        let _ = handle_tools_call(
+            &state,
+            Some(json!(6)),
+            json!({"name":"write","arguments":{"workspace_id":workspace_id,"path":"notes.txt","content":"new note\n"}}),
+            Some("sid_checkpoint"),
+        );
+        let full_session = handle_tools_call(
+            &state,
+            Some(json!(7)),
+            json!({"name":"show_changes","arguments":{"workspace_id":workspace_id,"since":"workspace_open","mark_shown":false}}),
+            Some("sid_checkpoint"),
+        );
+        let full_payload = &full_session["result"]["structuredContent"];
+        assert_eq!(full_payload["since"], "workspace_open");
+        assert_eq!(full_payload["diff_basis"], "working_tree");
+        let full_diff = full_payload["diff"].as_str().unwrap();
+        assert!(full_diff.contains("# First"));
+        assert!(full_payload["status"]
+            .as_str()
+            .unwrap()
+            .contains("notes.txt"));
+        assert!(full_payload["recent_actions"].as_array().unwrap().len() >= 2);
+
+        let working_tree = handle_tools_call(
+            &state,
+            Some(json!(8)),
+            json!({"name":"show_changes","arguments":{"workspace_id":workspace_id,"since":"working_tree","mark_shown":true}}),
+            Some("sid_checkpoint"),
+        );
+        assert_eq!(
+            working_tree["result"]["structuredContent"]["mark_shown"],
+            false
+        );
+        assert_eq!(
+            working_tree["result"]["structuredContent"]["checkpoint"]["fallback"],
+            false
+        );
+        assert_eq!(
+            working_tree["result"]["structuredContent"]["checkpoint"]["available"],
+            false
+        );
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(state_dir).unwrap();
+    }
+
+    #[test]
+    fn show_changes_without_state_dir_reports_checkpoint_fallback() {
+        let root = temp_project();
+        init_git_repo(&root);
+        let mut raw = raw_config(root.clone());
+        raw.trust_level = TrustLevel::Execute;
+        raw.state_dir = None;
+        let config = validate_raw(raw).unwrap();
+        let state = build_state(config).unwrap();
+
+        let opened = handle_tools_call(
+            &state,
+            Some(json!(1)),
+            json!({"name":"open_workspace","arguments":{"path":root}}),
+            Some("sid_no_state"),
+        );
+        let workspace_id = opened["result"]["structuredContent"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let _ = handle_tools_call(
+            &state,
+            Some(json!(2)),
+            json!({"name":"write","arguments":{"workspace_id":workspace_id,"path":"README.md","content":"# No state\n"}}),
+            Some("sid_no_state"),
+        );
+        let changes = handle_tools_call(
+            &state,
+            Some(json!(3)),
+            json!({"name":"show_changes","arguments":{"workspace_id":workspace_id}}),
+            Some("sid_no_state"),
+        );
+        let payload = &changes["result"]["structuredContent"];
+        assert_eq!(payload["diff_basis"], "working_tree");
+        assert_eq!(payload["checkpoint"]["available"], false);
+        assert_eq!(payload["checkpoint"]["fallback"], true);
+        assert!(payload["checkpoint"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("state_dir"));
+        assert!(payload["diff"].as_str().unwrap().contains("# No state"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

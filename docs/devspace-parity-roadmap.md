@@ -275,8 +275,13 @@ Deliverables:
   summaries. The `render_changes` tool now binds a self-contained HTML widget
   resource at `ui://codex-web-bridge/changes.html`.
 - `show_changes` aggregate tool. Status: implemented as a readonly structured
-  fallback with branch, HEAD, short status, bounded diff/stat, and recent
-  change-oriented actions.
+  fallback with branch, HEAD, short status, bounded diff/stat, recent
+  change-oriented actions, and content-free connector-state checkpoints for
+  `last_shown` and `workspace_open` action windows. Diff/stat output remains
+  the current Git working tree diff and is labeled with
+  `diff_basis: "working_tree"` so agents do not confuse it with a persisted
+  content snapshot. `mark_shown: false` lets agents inspect actions without
+  advancing the checkpoint.
 - `show_review` aggregate tool. Status: implemented as a readonly structured
   fallback with recoverable review notes and edit plans for authenticated,
   workspace-scoped agents.

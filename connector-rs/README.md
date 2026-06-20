@@ -185,9 +185,18 @@ then unlocks other files inside that skill directory only after the entrypoint
 has been read in the same workspace session.
 
 `show_changes` is the agent-facing change summary: it returns branch, HEAD,
-short status, bounded diff stat, bounded diff text, and recent change-oriented
-actions from the current session. `render_changes` returns the same structured
-data and binds the built-in Apps widget resource
+short status, bounded current working-tree diff/stat, and recent
+change-oriented actions from the current session. Its checkpoints are
+content-free timestamps in connector state: by default `since: "last_shown"`
+filters recent actions since the last shown checkpoint and advances that
+checkpoint after returning; pass `since: "workspace_open"` to show actions
+since the workspace opened, `since: "working_tree"` to skip checkpoint
+filtering, or `mark_shown: false` to inspect actions without advancing the
+checkpoint. The result includes `diff_basis: "working_tree"` so hosts do not
+mistake the diff for a persisted content snapshot. If checkpoint state is
+unavailable, the result explicitly reports fallback mode and still returns the
+direct working tree diff. `render_changes` returns the same structured data
+and binds the built-in Apps widget resource
 `ui://codex-web-bridge/changes.html` for hosts that support ChatGPT Apps-style
 components. `show_review` aggregates recoverable review notes and edit plans
 for a workspace, and `render_review` binds the review handoff widget
