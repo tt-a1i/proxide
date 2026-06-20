@@ -89,7 +89,7 @@ cp -R "$REPO_ROOT/connector-rs/src" "$stage/connector-rs/src"
 cp -R "$REPO_ROOT/connector" "$stage/connector"
 cp -R "$REPO_ROOT/skills/codex-web-bridge" "$stage/skills/codex-web-bridge"
 cp "$REPO_ROOT/scripts/install-connector.sh" "$REPO_ROOT/scripts/install-release.sh" "$REPO_ROOT/scripts/verify-release.sh" "$REPO_ROOT/scripts/package-connector.sh" "$stage/scripts/"
-cp "$REPO_ROOT/docs/devspace-parity-roadmap.md" "$stage/docs/"
+cp "$REPO_ROOT/docs/devspace-parity-roadmap.md" "$REPO_ROOT/docs/release.md" "$stage/docs/"
 
 find "$stage" \( -name '.git' -o -name 'target' -o -name '.codex' -o -name '.codex-web-bridge' -o -name '__pycache__' \) -prune -exec rm -rf {} +
 find "$stage" \( \

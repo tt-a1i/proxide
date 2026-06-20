@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Verify Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ github.event.inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' connector-rs/Cargo.toml | head -1)"
+          if [[ "${tag#v}" != "$cargo_version" ]]; then
+            echo "release tag $tag does not match connector-rs/Cargo.toml version $cargo_version" >&2
+            exit 1
+          fi
+
+      - name: Verify release package
+        run: ./scripts/verify-release.sh
+
+  package:
+    name: Package (${{ matrix.name }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+          - name: darwin-x86_64
+            os: macos-13
+          - name: darwin-aarch64
+            os: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ github.event.inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' connector-rs/Cargo.toml | head -1)"
+          if [[ "${tag#v}" != "$cargo_version" ]]; then
+            echo "release tag $tag does not match connector-rs/Cargo.toml version $cargo_version" >&2
+            exit 1
+          fi
+
+      - name: Package connector
+        run: ./scripts/package-connector.sh --out-dir dist
+
+      - name: Verify package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_tar="$(find dist -maxdepth 1 -name 'codex-web-bridge-connector-*.tar.gz' -print -quit)"
+          test -n "$package_tar"
+          test -f "$package_tar.sha256"
+          tar -tzf "$package_tar" | grep -q '/bin/codex-connector$'
+          tar -tzf "$package_tar" | grep -q '/skills/codex-web-bridge/SKILL.md$'
+          tar -tzf "$package_tar" | grep -q '/docs/release.md$'
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum -c "$(basename "$package_tar").sha256")
+          else
+            (cd dist && shasum -a 256 -c "$(basename "$package_tar").sha256")
+          fi
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-web-bridge-connector-${{ matrix.name }}
+          path: |
+            dist/codex-web-bridge-connector-*.tar.gz
+            dist/codex-web-bridge-connector-*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Resolve tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ github.event.inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+(\.[0-9]+){2}(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "invalid release tag: $tag" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Check release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la release-assets
+          test "$(find release-assets -maxdepth 1 -name 'codex-web-bridge-connector-*.tar.gz' | wc -l | tr -d ' ')" -ge 3
+          test "$(find release-assets -maxdepth 1 -name 'codex-web-bridge-connector-*.tar.gz.sha256' | wc -l | tr -d ' ')" -ge 3
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" release-assets/* --title "$TAG" --generate-notes
+          fi

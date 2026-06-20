@@ -113,13 +113,13 @@ Use $skill-installer to install https://github.com/tt-a1i/codex-web-bridge/tree/
 
 如果需要 MCP Connector Mode，不要只安装 skill 子目录；请 clone 或安装包含 `skills/codex-web-bridge/`、`connector-rs/`、`bin/codex-connector` 的完整项目分发。已只安装 skill 的用户需要升级到完整 checkout，否则只能使用 Bridge Mode，不能启动本地 MCP server。
 
-发布包可用后，用户可以直接从 GitHub Release 安装 connector：
+GitHub Release 发布后，用户可以直接安装 connector：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tt-a1i/codex-web-bridge/main/scripts/install-release.sh | bash
 ```
 
-这个脚本会下载对应平台的 release tarball、校验 SHA-256、把 `codex-connector` 安装到 `~/.local/bin`，并保留解压包里的 `skills/` 目录用于 `codex-connector init --skill-root ...`。源码 checkout 用户仍可用：
+这个脚本会下载对应平台的 release tarball、校验 SHA-256、把 `codex-connector` 安装到 `~/.local/bin`，并保留解压包里的 `skills/` 目录用于 `codex-connector init --skill-root ...`。Release workflow 会为 Linux x86_64、macOS x86_64 和 macOS arm64 上传 tarball 与 checksum；发布步骤见 [docs/release.md](docs/release.md)。源码 checkout 用户仍可用：
 
 ```bash
 ./scripts/install-connector.sh

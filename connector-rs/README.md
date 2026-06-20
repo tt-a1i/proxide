@@ -100,7 +100,7 @@ another prefix. The binary install does not include the skill files; keep the
 full connector checkout or unpacked release package available when configuring
 `--skill-root`.
 
-After GitHub Release assets are published, install without a source checkout:
+After a tag release is published, install without a source checkout:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tt-a1i/codex-web-bridge/main/scripts/install-release.sh | bash
@@ -110,6 +110,8 @@ That script downloads the matching release tarball, verifies the SHA-256 file,
 installs `codex-connector` to `~/.local/bin`, and keeps the unpacked package
 under `~/.local/share/codex-web-bridge/connector` so the bundled `skills/`
 directory can be passed to `codex-connector init --skill-root`.
+The GitHub Release workflow uploads Linux x86_64, macOS x86_64, and macOS
+arm64 packages. See `docs/release.md` for the release runbook and smoke test.
 
 Build a distributable package from a full checkout:
 
