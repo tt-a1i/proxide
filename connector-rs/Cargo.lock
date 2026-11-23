@@ -203,6 +203,7 @@ dependencies = [
  "axum",
  "base64",
  "clap",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
