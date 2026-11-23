@@ -5113,6 +5113,16 @@ fn normalize_patch_line(value: &str) -> &str {
     value.trim_end_matches('\n').trim_end_matches('\r')
 }
 
+fn shell_timeout(mode: ShellMode, requested_ms: Option<u64>) -> Duration {
+    let default_ms = SHELL_TIMEOUT.as_millis() as u64;
+    let requested = requested_ms.unwrap_or(default_ms);
+    let cap = match mode {
+        ShellMode::Full => 30 * 60 * 1000,
+        ShellMode::Safe | ShellMode::Off => default_ms,
+    };
+    Duration::from_millis(requested.min(cap).max(1))
+}
+
 fn shell_tool(state: &AppState, args: &serde_json::Map<String, Value>) -> Result<Value> {
     let ws = workspace(state, required(args, "workspace_id")?)?;
     let command = required(args, "command")?;
@@ -5125,8 +5135,7 @@ fn shell_tool(state: &AppState, args: &serde_json::Map<String, Value>) -> Result
     }
     let cwd_rel = args.get("cwd").and_then(Value::as_str).unwrap_or(".");
     let cwd = resolve_dir(&ws, cwd_rel)?;
-    let timeout_ms = optional_u64(args, "timeout_ms")?.unwrap_or(SHELL_TIMEOUT.as_millis() as u64);
-    let timeout = Duration::from_millis(timeout_ms.min(SHELL_TIMEOUT.as_millis() as u64).max(1));
+    let timeout = shell_timeout(state.config.shell_mode, optional_u64(args, "timeout_ms")?);
     let mut child = Command::new("/bin/bash")
         .arg("-lc")
         .arg(command)
@@ -9287,6 +9296,26 @@ mod tests {
         .unwrap_err();
         assert!(escaped.to_string().contains(".."));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shell_timeout_caps_requests_by_shell_mode() {
+        assert_eq!(
+            shell_timeout(ShellMode::Full, None),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            shell_timeout(ShellMode::Full, Some(12_000)),
+            Duration::from_secs(12)
+        );
+        assert_eq!(
+            shell_timeout(ShellMode::Full, Some(u64::MAX)),
+            Duration::from_secs(30 * 60)
+        );
+        assert_eq!(
+            shell_timeout(ShellMode::Safe, Some(12_000)),
+            Duration::from_secs(10)
+        );
     }
 
     #[test]
