@@ -2073,14 +2073,12 @@ async fn handle_rpc(State(state): State<AppState>, headers: HeaderMap, body: Byt
     if method == "initialize" {
         let new_id = Uuid::new_v4().simple().to_string();
         register_session(state.initialized_sessions.lock().unwrap(), new_id.clone());
-        record_session_initialized(&state, &new_id);
         session_id = Some(new_id.clone());
         issued_session = Some(new_id);
     }
     if is_notification {
         if method == "notifications/initialized" {
             if let Some(sid) = session_id {
-                record_session_initialized(&state, &sid);
                 register_session(state.initialized_sessions.lock().unwrap(), sid);
             }
         }
@@ -3016,14 +3014,6 @@ fn session_detail(events: &[Value], session_id: &str) -> Value {
     })
 }
 
-fn record_session_initialized(state: &AppState, session_id: &str) {
-    update_persisted_state(state, |snapshot| {
-        let session = persisted_session_mut(snapshot, session_id);
-        session.initialized = true;
-        session.last_unix_ms = unix_ms();
-    });
-}
-
 fn record_workspace_opened(
     state: &AppState,
     session_id: Option<&str>,
@@ -3155,7 +3145,7 @@ fn persisted_session_mut<'a>(
         session_id: session_id.to_string(),
         created_unix_ms: now,
         last_unix_ms: now,
-        initialized: false,
+        initialized: true,
         workspaces: vec![],
         tool_calls: vec![],
     });
@@ -10723,7 +10713,6 @@ esac
         raw.state_dir = Some(state_dir.clone());
         let config = validate_raw(raw).unwrap();
         let state = build_state(config).unwrap();
-        record_session_initialized(&state, "sid_changes");
 
         let opened = handle_tools_call(
             &state,
@@ -10832,7 +10821,6 @@ esac
         raw.state_dir = Some(state_dir.clone());
         let config = validate_raw(raw).unwrap();
         let state = build_state(config).unwrap();
-        record_session_initialized(&state, "sid_checkpoint");
 
         let opened = handle_tools_call(
             &state,
@@ -11293,6 +11281,54 @@ esac
                 >= 2
         );
 
+        server.abort();
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(state_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn initialize_writes_no_state_until_a_tool_call() {
+        let root = temp_project();
+        let state_dir = temp_project();
+        let mut raw = raw_config(root.clone());
+        raw.state_dir = Some(state_dir.clone());
+        let state = build_state(validate_raw(raw).unwrap()).unwrap();
+        let app = build_router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let (init_response, _) = post_json(
+            addr,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),
+            None,
+        )
+        .await;
+        let session_id = header_value(&init_response, "Mcp-Session-Id").unwrap();
+        let notification =
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}).to_string();
+        let accepted = raw_http(
+            addr,
+            format!(
+                "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nAuthorization: Bearer secret\r\nMcp-Session-Id: {session_id}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{notification}",
+                notification.len()
+            ),
+        )
+        .await;
+        assert_eq!(http_status(&accepted), 202);
+        let state_file = state_dir.join("workspace_state.json");
+        assert!(!state_file.exists());
+
+        let _ = post_json(
+            addr,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"open_workspace","arguments":{"path":root}}}),
+            Some(&session_id),
+        )
+        .await;
+        let state_json: Value = serde_json::from_slice(&fs::read(&state_file).unwrap()).unwrap();
+        assert_eq!(state_json["sessions"][0]["session_id"], session_id.as_str());
+        assert_eq!(state_json["sessions"][0]["initialized"], true);
         server.abort();
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(state_dir).unwrap();
@@ -11798,7 +11834,6 @@ esac
         raw.state_dir = Some(state_dir.clone());
         let config = validate_raw(raw).unwrap();
         let state = build_state(config).unwrap();
-        record_session_initialized(&state, "sid_review");
 
         let opened = handle_tools_call(
             &state,
@@ -11986,7 +12021,6 @@ esac
         raw.state_dir = Some(state_dir.clone());
         let config = validate_raw(raw).unwrap();
         let state = build_state(config).unwrap();
-        record_session_initialized(&state, "sid_plan");
 
         let opened = handle_tools_call(
             &state,
@@ -12129,7 +12163,6 @@ esac
         raw.state_dir = Some(state_dir.clone());
         let config = validate_raw(raw).unwrap();
         let state = build_state(config).unwrap();
-        record_session_initialized(&state, "sid_apply_plan");
 
         let opened = handle_tools_call(
             &state,
@@ -12303,7 +12336,6 @@ esac
         raw.state_dir = Some(state_dir.clone());
         let config = validate_raw(raw).unwrap();
         let state = build_state(config).unwrap();
-        record_session_initialized(&state, "sid_state");
 
         let opened = handle_tools_call(
             &state,
