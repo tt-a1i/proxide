@@ -2,10 +2,11 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     env, fs,
     io::{self, BufRead, BufReader, IsTerminal, Read, Write},
+    mem,
     net::SocketAddr,
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    process::{Command, ExitStatus, Stdio},
+    sync::{mpsc, Arc, Mutex, PoisonError},
     thread,
     time::{Duration, Instant},
 };
@@ -69,6 +70,7 @@ const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(60);
 const GH_TIMEOUT: Duration = Duration::from_secs(60);
 const GH_BATCH_TIMEOUT: Duration = Duration::from_secs(90);
 const SHELL_TIMEOUT: Duration = Duration::from_secs(10);
+const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(2);
 const PRIMARY_ENDPOINT: &str = "/mcp";
 const LEGACY_ENDPOINT: &str = "/rpc";
 const CHANGES_WIDGET_URI: &str = "ui://codex-web-bridge/changes.html";
@@ -2071,14 +2073,12 @@ async fn handle_rpc(State(state): State<AppState>, headers: HeaderMap, body: Byt
     if method == "initialize" {
         let new_id = Uuid::new_v4().simple().to_string();
         register_session(state.initialized_sessions.lock().unwrap(), new_id.clone());
-        record_session_initialized(&state, &new_id);
         session_id = Some(new_id.clone());
         issued_session = Some(new_id);
     }
     if is_notification {
         if method == "notifications/initialized" {
             if let Some(sid) = session_id {
-                record_session_initialized(&state, &sid);
                 register_session(state.initialized_sessions.lock().unwrap(), sid);
             }
         }
@@ -2100,7 +2100,16 @@ async fn handle_rpc(State(state): State<AppState>, headers: HeaderMap, body: Byt
             }
         }
     }
-    let response = handle_request(&state, req_id, method, params, session_id);
+    let method = method.to_string();
+    let error_id = req_id.clone();
+    let response = match tokio::task::spawn_blocking(move || {
+        handle_request(&state, req_id, &method, params, session_id)
+    })
+    .await
+    {
+        Ok(response) => response,
+        Err(_) => rpc_error(error_id, -32603, "internal error"),
+    };
     json_rpc_response(StatusCode::OK, response, issued_session.as_deref())
 }
 
@@ -3005,14 +3014,6 @@ fn session_detail(events: &[Value], session_id: &str) -> Value {
     })
 }
 
-fn record_session_initialized(state: &AppState, session_id: &str) {
-    update_persisted_state(state, |snapshot| {
-        let session = persisted_session_mut(snapshot, session_id);
-        session.initialized = true;
-        session.last_unix_ms = unix_ms();
-    });
-}
-
 fn record_workspace_opened(
     state: &AppState,
     session_id: Option<&str>,
@@ -3144,7 +3145,7 @@ fn persisted_session_mut<'a>(
         session_id: session_id.to_string(),
         created_unix_ms: now,
         last_unix_ms: now,
-        initialized: false,
+        initialized: true,
         workspaces: vec![],
         tool_calls: vec![],
     });
@@ -5113,6 +5114,16 @@ fn normalize_patch_line(value: &str) -> &str {
     value.trim_end_matches('\n').trim_end_matches('\r')
 }
 
+fn shell_timeout(mode: ShellMode, requested_ms: Option<u64>) -> Duration {
+    let default_ms = SHELL_TIMEOUT.as_millis() as u64;
+    let requested = requested_ms.unwrap_or(default_ms);
+    let cap = match mode {
+        ShellMode::Full => 30 * 60 * 1000,
+        ShellMode::Safe | ShellMode::Off => default_ms,
+    };
+    Duration::from_millis(requested.min(cap).max(1))
+}
+
 fn shell_tool(state: &AppState, args: &serde_json::Map<String, Value>) -> Result<Value> {
     let ws = workspace(state, required(args, "workspace_id")?)?;
     let command = required(args, "command")?;
@@ -5125,60 +5136,27 @@ fn shell_tool(state: &AppState, args: &serde_json::Map<String, Value>) -> Result
     }
     let cwd_rel = args.get("cwd").and_then(Value::as_str).unwrap_or(".");
     let cwd = resolve_dir(&ws, cwd_rel)?;
-    let timeout_ms = optional_u64(args, "timeout_ms")?.unwrap_or(SHELL_TIMEOUT.as_millis() as u64);
-    let timeout = Duration::from_millis(timeout_ms.min(SHELL_TIMEOUT.as_millis() as u64).max(1));
-    let mut child = Command::new("/bin/bash")
+    let timeout = shell_timeout(state.config.shell_mode, optional_u64(args, "timeout_ms")?);
+    let mut shell = Command::new("/bin/bash");
+    shell
         .arg("-lc")
         .arg(command)
         .current_dir(&cwd)
         .env_clear()
-        .envs(safe_shell_env())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| "failed to spawn /bin/bash")?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("shell stdout unavailable"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("shell stderr unavailable"))?;
-    let stdout_reader = thread::spawn(move || read_pipe_limited(stdout, MAX_SHELL_OUTPUT_BYTES));
-    let stderr_reader = thread::spawn(move || read_pipe_limited(stderr, MAX_SHELL_OUTPUT_BYTES));
-    let start = Instant::now();
-    let (status, timed_out) = loop {
-        if let Some(status) = child.try_wait()? {
-            break (Some(status), false);
-        }
-        if start.elapsed() > timeout {
-            let _ = child.kill();
-            let status = child.wait().ok();
-            break (status, true);
-        }
-        thread::sleep(Duration::from_millis(25));
-    };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| anyhow!("shell stdout reader panicked"))??;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| anyhow!("shell stderr reader panicked"))??;
-    let stdout_truncated = stdout.len() > MAX_SHELL_OUTPUT_BYTES;
-    let stderr_truncated = stderr.len() > MAX_SHELL_OUTPUT_BYTES;
-    let mut stdout = stdout;
-    let mut stderr = stderr;
-    stdout.truncate(MAX_SHELL_OUTPUT_BYTES);
-    stderr.truncate(MAX_SHELL_OUTPUT_BYTES);
+        .envs(safe_shell_env());
+    let output = run_in_process_group(
+        &mut shell,
+        "shell",
+        "failed to spawn /bin/bash".to_string(),
+        timeout,
+    )?;
     Ok(json!({
         "cwd": cwd.strip_prefix(&ws.root).unwrap_or(Path::new(".")).to_string_lossy(),
-        "exit_code": status.and_then(|status| status.code()),
-        "timed_out": timed_out,
-        "stdout": String::from_utf8_lossy(&stdout),
-        "stderr": String::from_utf8_lossy(&stderr),
-        "truncated": stdout_truncated || stderr_truncated,
+        "exit_code": output.status.and_then(|status| status.code()),
+        "timed_out": output.timed_out,
+        "stdout": String::from_utf8_lossy(&output.stdout),
+        "stderr": String::from_utf8_lossy(&output.stderr),
+        "truncated": output.truncated,
     }))
 }
 
@@ -6560,53 +6538,153 @@ fn command_with_output<S: AsRef<str>>(
     cwd: &Path,
     timeout: Duration,
 ) -> Result<GitCommandOutput> {
-    let mut child = Command::new(program)
+    let mut child_command = Command::new(program);
+    child_command
         .args(args.iter().map(AsRef::as_ref))
-        .current_dir(cwd)
+        .current_dir(cwd);
+    let output = run_in_process_group(
+        &mut child_command,
+        program,
+        format!("{program} is not installed"),
+        timeout,
+    )?;
+    Ok(GitCommandOutput {
+        exit_code: output.status.and_then(|status| status.code()),
+        stdout: output.stdout,
+        stderr: output.stderr,
+        timed_out: output.timed_out,
+        truncated: output.truncated,
+    })
+}
+
+struct CapturedOutput {
+    status: Option<ExitStatus>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    timed_out: bool,
+    truncated: bool,
+}
+
+fn run_in_process_group(
+    command: &mut Command,
+    program: &str,
+    spawn_error: String,
+    timeout: Duration,
+) -> Result<CapturedOutput> {
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("{program} is not installed"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("{program} stdout unavailable"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("{program} stderr unavailable"))?;
-    let stdout_reader = thread::spawn(move || read_pipe_limited(stdout, MAX_SHELL_OUTPUT_BYTES));
-    let stderr_reader = thread::spawn(move || read_pipe_limited(stderr, MAX_SHELL_OUTPUT_BYTES));
+        .stderr(Stdio::piped());
+    let mut child = in_own_process_group(command).spawn().context(spawn_error)?;
+    let pgid = child.id();
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        kill_process_group(pgid);
+        let _ = child.wait();
+        bail!("{program} output pipes unavailable");
+    };
+    let stdout_capture = PipeCapture::spawn(stdout, MAX_SHELL_OUTPUT_BYTES);
+    let stderr_capture = PipeCapture::spawn(stderr, MAX_SHELL_OUTPUT_BYTES);
     let start = Instant::now();
     let (status, timed_out) = loop {
-        if let Some(status) = child.try_wait()? {
+        let exited = match child.try_wait() {
+            Ok(exited) => exited,
+            Err(error) => {
+                kill_process_group(pgid);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.into());
+            }
+        };
+        if let Some(status) = exited {
+            kill_process_group(pgid);
             break (Some(status), false);
         }
         if start.elapsed() > timeout {
+            kill_process_group(pgid);
             let _ = child.kill();
             let status = child.wait().ok();
             break (status, true);
         }
         thread::sleep(Duration::from_millis(25));
     };
-    let mut stdout = stdout_reader
-        .join()
-        .map_err(|_| anyhow!("{program} stdout reader panicked"))??;
-    let mut stderr = stderr_reader
-        .join()
-        .map_err(|_| anyhow!("{program} stderr reader panicked"))??;
-    let stdout_truncated = stdout.len() > MAX_SHELL_OUTPUT_BYTES;
-    let stderr_truncated = stderr.len() > MAX_SHELL_OUTPUT_BYTES;
+    let drain_deadline = Instant::now() + OUTPUT_DRAIN_GRACE;
+    let (mut stdout, stdout_complete) = stdout_capture.finish(drain_deadline, program, "stdout")?;
+    let (mut stderr, stderr_complete) = stderr_capture.finish(drain_deadline, program, "stderr")?;
+    let truncated = stdout.len() > MAX_SHELL_OUTPUT_BYTES
+        || stderr.len() > MAX_SHELL_OUTPUT_BYTES
+        || !stdout_complete
+        || !stderr_complete;
     stdout.truncate(MAX_SHELL_OUTPUT_BYTES);
     stderr.truncate(MAX_SHELL_OUTPUT_BYTES);
-    Ok(GitCommandOutput {
-        exit_code: status.and_then(|status| status.code()),
+    Ok(CapturedOutput {
+        status,
         stdout,
         stderr,
         timed_out,
-        truncated: stdout_truncated || stderr_truncated,
+        truncated,
     })
+}
+
+#[cfg(unix)]
+fn in_own_process_group(command: &mut Command) -> &mut Command {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0)
+}
+
+#[cfg(not(unix))]
+fn in_own_process_group(command: &mut Command) -> &mut Command {
+    command
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pgid: u32) {}
+
+#[cfg(unix)]
+fn kill_process_group(pgid: u32) {
+    let Ok(pgid) = libc::pid_t::try_from(pgid) else {
+        return;
+    };
+    if pgid <= 1 || pgid == unsafe { libc::getpgrp() } {
+        return;
+    }
+    unsafe {
+        libc::killpg(pgid, libc::SIGKILL);
+    }
+}
+
+struct PipeCapture {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    done: mpsc::Receiver<std::io::Result<()>>,
+}
+
+impl PipeCapture {
+    fn spawn<R: Read + Send + 'static>(reader: R, limit: usize) -> Self {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let shared = Arc::clone(&bytes);
+        let (sender, done) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(read_pipe_limited(reader, limit, &shared));
+        });
+        Self { bytes, done }
+    }
+
+    fn finish(self, deadline: Instant, program: &str, stream: &str) -> Result<(Vec<u8>, bool)> {
+        let complete = match self
+            .done
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            Ok(result) => {
+                result?;
+                true
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => false,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("{program} {stream} reader panicked")
+            }
+        };
+        let bytes = mem::take(&mut *self.bytes.lock().unwrap_or_else(PoisonError::into_inner));
+        Ok((bytes, complete))
+    }
 }
 
 fn worktrees_root(state_dir: &Path) -> PathBuf {
@@ -6791,20 +6869,23 @@ fn bash_available() -> bool {
         .unwrap_or(false)
 }
 
-fn read_pipe_limited<R: Read>(mut reader: R, limit: usize) -> std::io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
+fn read_pipe_limited<R: Read>(
+    mut reader: R,
+    limit: usize,
+    bytes: &Mutex<Vec<u8>>,
+) -> std::io::Result<()> {
     let mut buffer = [0u8; 8192];
     loop {
         let read = reader.read(&mut buffer)?;
         if read == 0 {
-            break;
+            return Ok(());
         }
+        let mut bytes = bytes.lock().unwrap_or_else(PoisonError::into_inner);
         let remaining = limit.saturating_add(1).saturating_sub(bytes.len());
         if remaining > 0 {
             bytes.extend_from_slice(&buffer[..read.min(remaining)]);
         }
     }
-    Ok(bytes)
 }
 
 fn safe_shell_env() -> Vec<(String, String)> {
@@ -9290,6 +9371,26 @@ mod tests {
     }
 
     #[test]
+    fn shell_timeout_caps_requests_by_shell_mode() {
+        assert_eq!(
+            shell_timeout(ShellMode::Full, None),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            shell_timeout(ShellMode::Full, Some(12_000)),
+            Duration::from_secs(12)
+        );
+        assert_eq!(
+            shell_timeout(ShellMode::Full, Some(u64::MAX)),
+            Duration::from_secs(30 * 60)
+        );
+        assert_eq!(
+            shell_timeout(ShellMode::Safe, Some(12_000)),
+            Duration::from_secs(10)
+        );
+    }
+
+    #[test]
     fn safe_shell_mode_allows_common_checks_and_blocks_risky_commands() {
         let root = temp_project();
         fs::write(root.join("README.md"), "# Test\n").unwrap();
@@ -9378,6 +9479,151 @@ mod tests {
         )
         .unwrap();
         assert_eq!(timed_out["timed_out"], true);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn execute_shell_state(root: &Path) -> AppState {
+        let mut raw = raw_config(root.to_path_buf());
+        raw.trust_level = TrustLevel::Execute;
+        let config = validate_raw(raw).unwrap();
+        AppState {
+            config: Arc::new(config),
+            registry: Arc::new(Mutex::new(WorkspaceRegistry::default())),
+            initialized_sessions: Arc::new(Mutex::new(InitializedSessions::default())),
+            oauth: None,
+            persisted_state: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn process_exists(pid: libc::pid_t) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    fn wait_for_process_exit(pid: libc::pid_t, limit: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < limit {
+            if !process_exists(pid) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        !process_exists(pid)
+    }
+
+    #[cfg(unix)]
+    fn started_pid(stdout: &str) -> libc::pid_t {
+        stdout
+            .trim()
+            .strip_prefix("started ")
+            .unwrap_or_else(|| panic!("unexpected stdout: {stdout:?}"))
+            .parse()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_tool_returns_when_background_child_holds_output() {
+        let root = temp_project();
+        let state = execute_shell_state(&root);
+        let opened = open_workspace(&state, root.to_str().unwrap()).unwrap();
+        let workspace_id = opened["workspace_id"].as_str().unwrap();
+        let start = Instant::now();
+        let output = shell_tool(
+            &state,
+            &serde_json::Map::from_iter([
+                ("workspace_id".to_string(), json!(workspace_id)),
+                (
+                    "command".to_string(),
+                    json!("sleep 30 & echo \"started $!\""),
+                ),
+            ]),
+        )
+        .unwrap();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "shell_tool took {elapsed:?}"
+        );
+        assert_eq!(output["timed_out"], false);
+        assert_eq!(output["exit_code"], 0);
+        assert_eq!(output["truncated"], false);
+        let pid = started_pid(output["stdout"].as_str().unwrap());
+        assert!(
+            wait_for_process_exit(pid, Duration::from_secs(2)),
+            "background child {pid} survived"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_tool_timeout_returns_when_background_child_holds_output() {
+        let root = temp_project();
+        let state = execute_shell_state(&root);
+        let opened = open_workspace(&state, root.to_str().unwrap()).unwrap();
+        let workspace_id = opened["workspace_id"].as_str().unwrap();
+        let start = Instant::now();
+        let output = shell_tool(
+            &state,
+            &serde_json::Map::from_iter([
+                ("workspace_id".to_string(), json!(workspace_id)),
+                (
+                    "command".to_string(),
+                    json!("sleep 30 & echo \"started $!\"; sleep 30"),
+                ),
+                ("timeout_ms".to_string(), json!(500)),
+            ]),
+        )
+        .unwrap();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "shell_tool took {elapsed:?}"
+        );
+        assert_eq!(output["timed_out"], true);
+        let pid = started_pid(output["stdout"].as_str().unwrap());
+        assert!(
+            wait_for_process_exit(pid, Duration::from_secs(2)),
+            "background child {pid} survived"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_tool_bounds_wait_for_output_held_outside_its_group() {
+        let root = temp_project();
+        let state = execute_shell_state(&root);
+        let opened = open_workspace(&state, root.to_str().unwrap()).unwrap();
+        let workspace_id = opened["workspace_id"].as_str().unwrap();
+        let start = Instant::now();
+        let output = shell_tool(
+            &state,
+            &serde_json::Map::from_iter([
+                ("workspace_id".to_string(), json!(workspace_id)),
+                (
+                    "command".to_string(),
+                    json!(
+                        "python3 -c 'import os, time; os.setsid(); open(\"ready\", \"w\").close(); time.sleep(30)' & until [ -e ready ]; do sleep 0.05; done; echo \"started $!\""
+                    ),
+                ),
+            ]),
+        )
+        .unwrap();
+        let elapsed = start.elapsed();
+        let pid = started_pid(output["stdout"].as_str().unwrap());
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "shell_tool took {elapsed:?}"
+        );
+        assert_eq!(output["timed_out"], false);
+        assert_eq!(output["exit_code"], 0);
+        assert_eq!(output["truncated"], true);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -10467,7 +10713,6 @@ esac
         raw.state_dir = Some(state_dir.clone());
         let config = validate_raw(raw).unwrap();
         let state = build_state(config).unwrap();
-        record_session_initialized(&state, "sid_changes");
 
         let opened = handle_tools_call(
             &state,
@@ -10576,7 +10821,6 @@ esac
         raw.state_dir = Some(state_dir.clone());
         let config = validate_raw(raw).unwrap();
         let state = build_state(config).unwrap();
-        record_session_initialized(&state, "sid_checkpoint");
 
         let opened = handle_tools_call(
             &state,
@@ -11043,6 +11287,108 @@ esac
     }
 
     #[tokio::test]
+    async fn initialize_writes_no_state_until_a_tool_call() {
+        let root = temp_project();
+        let state_dir = temp_project();
+        let mut raw = raw_config(root.clone());
+        raw.state_dir = Some(state_dir.clone());
+        let state = build_state(validate_raw(raw).unwrap()).unwrap();
+        let app = build_router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let (init_response, _) = post_json(
+            addr,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),
+            None,
+        )
+        .await;
+        let session_id = header_value(&init_response, "Mcp-Session-Id").unwrap();
+        let notification =
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}).to_string();
+        let accepted = raw_http(
+            addr,
+            format!(
+                "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nAuthorization: Bearer secret\r\nMcp-Session-Id: {session_id}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{notification}",
+                notification.len()
+            ),
+        )
+        .await;
+        assert_eq!(http_status(&accepted), 202);
+        let state_file = state_dir.join("workspace_state.json");
+        assert!(!state_file.exists());
+
+        let _ = post_json(
+            addr,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"open_workspace","arguments":{"path":root}}}),
+            Some(&session_id),
+        )
+        .await;
+        let state_json: Value = serde_json::from_slice(&fs::read(&state_file).unwrap()).unwrap();
+        assert_eq!(state_json["sessions"][0]["session_id"], session_id.as_str());
+        assert_eq!(state_json["sessions"][0]["initialized"], true);
+        server.abort();
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(state_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn slow_tool_call_does_not_block_other_requests() {
+        let root = temp_project();
+        let state = execute_shell_state(&root);
+        let app = build_router(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let (init_response, _) = post_json(
+            addr,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),
+            None,
+        )
+        .await;
+        let session_id = header_value(&init_response, "Mcp-Session-Id").unwrap();
+        let (_, opened) = post_json(
+            addr,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"open_workspace","arguments":{"path":root}}}),
+            Some(&session_id),
+        )
+        .await;
+        let workspace_id = opened["result"]["structuredContent"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let start = Instant::now();
+        let slow_session = session_id.clone();
+        let slow = tokio::spawn(async move {
+            post_json(
+                addr,
+                json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"shell","arguments":{"workspace_id":workspace_id,"command":"sleep 3"}}}),
+                Some(&slow_session),
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let (_, ping) =
+            post_json(addr, json!({"jsonrpc":"2.0","id":4,"method":"ping"}), None).await;
+        let elapsed = start.elapsed();
+        assert_eq!(ping["result"], json!({}));
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "ping answered after {elapsed:?}"
+        );
+        let (_, slow) = slow.await.unwrap();
+        assert_eq!(slow["result"]["structuredContent"]["exit_code"], 0);
+
+        server.abort();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn http_security_gates_reject_bad_requests() {
         let root = temp_project();
         let config = validate_raw(raw_config(root.clone())).unwrap();
@@ -11488,7 +11834,6 @@ esac
         raw.state_dir = Some(state_dir.clone());
         let config = validate_raw(raw).unwrap();
         let state = build_state(config).unwrap();
-        record_session_initialized(&state, "sid_review");
 
         let opened = handle_tools_call(
             &state,
@@ -11676,7 +12021,6 @@ esac
         raw.state_dir = Some(state_dir.clone());
         let config = validate_raw(raw).unwrap();
         let state = build_state(config).unwrap();
-        record_session_initialized(&state, "sid_plan");
 
         let opened = handle_tools_call(
             &state,
@@ -11819,7 +12163,6 @@ esac
         raw.state_dir = Some(state_dir.clone());
         let config = validate_raw(raw).unwrap();
         let state = build_state(config).unwrap();
-        record_session_initialized(&state, "sid_apply_plan");
 
         let opened = handle_tools_call(
             &state,
@@ -11993,7 +12336,6 @@ esac
         raw.state_dir = Some(state_dir.clone());
         let config = validate_raw(raw).unwrap();
         let state = build_state(config).unwrap();
-        record_session_initialized(&state, "sid_state");
 
         let opened = handle_tools_call(
             &state,
