@@ -9,6 +9,7 @@
 - 将项目从 `review-gate` 重构为 `codex-web-bridge`，核心定位从“审查 gate”收敛为“Codex 到网页端强模型的通信桥”。
 - 将 skill 目录改为 `skills/codex-web-bridge`。
 - 将 packet builder 的主参数改为 `--provider`、`--purpose`、`--question`，并保留旧 `--mode` / `--decision` 的兼容别名。
+- Rust connector 在 `shell_mode=full` 下把 `shell` 工具的 `timeout_ms` 上限从 10 秒提高到 30 分钟；`safe` 仍为 10 秒。
 
 ### Added
 
@@ -40,3 +41,5 @@
 ### Fixed
 
 - `bridge_handoff.py list` 现在也会显示只有 inbox 响应、没有 outbox manifest 的网页响应导入记录。
+- Rust connector 的 `shell` 和内部命令在独立进程组中运行，命令退出或超时后结束整个进程组（Unix）；后台进程占住 stdout/stderr 时最多再等 2 秒，并把输出标记为 `truncated`。请求在 `spawn_blocking` 中处理，一个卡住的调用不再阻塞其他请求。
+- Rust connector 的 `initialize` 和 `notifications/initialized` 不再写 connector state；session 在第一次 workspace 或工具调用时才写入。
